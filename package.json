@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "prepublishOnly": "echo \"Preparing for publish...\""
+    "prepublishOnly": "echo \"Preparing for publish...\"",
+    "deploy": "npm publish --access public"
   },
   "keywords": [
     "graphite",
