@@ -388,8 +388,8 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
     lines = [STACK_COMMENT_PREFIX, "main"]
     for i, branch in enumerate(stack):
         is_last = i == len(stack) - 1
-        prefix = "└─" if is_last else "├─"  # L-shape for last item, T-shape for others
-        indent = "─" * (i - 1)  # Vertical bars for indent
+        prefix = "└" if is_last else "├"  # L-shape for last item, T-shape for others
+        indent = "─" * (i)  # Vertical bars for indent
         # Get PR number and title from URL if it exists
         pr_text = "PR pending"
         if branch in pr_info["branches"]:
