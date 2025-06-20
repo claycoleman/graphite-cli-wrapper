@@ -6,15 +6,12 @@ claycoleman-gt-wrapper-*.tgz
 
 
 # python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyz
-*.pywz
-*.pyc
-*.pyo
-*.cpython
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.pyw
+**/*.pyz
+**/*.pywz
+**/*.pyz
+**/*.cpython*
