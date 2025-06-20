@@ -9,7 +9,7 @@ import sys
 import os
 
 # Add the bin directory to the path so we can import gt_commands
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "bin"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 
 from gt_commands import (
     parse_historical_branches_from_comment,

@@ -309,11 +309,13 @@ def parse_historical_branches_from_comment(
     lines = comment_body.split("\n")
     historical_branches: list[str] = []
     historical_pr_info: dict[str, BranchInfo] = {}
-    
+
     # Find the position of the current lowest branch in the comment
     current_lowest_position = -1
-    current_pr_urls = {branch_info["url"] for branch_info in pr_info["branches"].values()}
-    
+    current_pr_urls = {
+        branch_info["url"] for branch_info in pr_info["branches"].values()
+    }
+
     # First pass: find where the current lowest branch appears
     for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
         line = line.strip()
@@ -332,21 +334,21 @@ def parse_historical_branches_from_comment(
             if pr_start != -1 and pr_end != -1:
                 pr_number = content[pr_start + 2 : pr_end]
                 pr_url = f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
-                
+
                 # If this PR is in our current stack, mark this position
                 if pr_url in current_pr_urls:
                     current_lowest_position = i
                     break  # Found the first (lowest) current branch
-    
+
     # If no current branch found in comment, return empty (can't determine historical context)
     if current_lowest_position == -1:
         return [], {}
-    
+
     # Second pass: collect branches that appear BEFORE the current lowest position
     for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
         if i >= current_lowest_position:  # Stop when we reach current branches
             break
-            
+
         line = line.strip()
         if not line or not line.startswith(("├─", "└─")):
             continue
@@ -388,8 +390,8 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
     lines = [STACK_COMMENT_PREFIX, "main"]
     for i, branch in enumerate(stack):
         is_last = i == len(stack) - 1
-        prefix = "└─" if is_last else "├─"  # L-shape for last item, T-shape for others
-        indent = "─" * (i - 1)  # Vertical bars for indent
+        prefix = "└" if is_last else "├"  # L-shape for last item, T-shape for others
+        indent = "─" * (i)  # Vertical bars for indent
         # Get PR number and title from URL if it exists
         pr_text = "PR pending"
         if branch in pr_info["branches"]:
@@ -772,6 +774,78 @@ def get_gt_help():
     return pre_authenticating + "TERMS" + post_terms
 
 
+def is_valid_gt_command(command: str) -> bool:
+    """
+    Check if the given command is a valid Graphite CLI command.
+    This is pretty hacky but for some reason the error output when doing an OG GT command is getting
+    garbled which is making parsing it to determine if the command is valid difficult.
+    The best approach would be to try to run the command with --help and see if it mentions an error in the output,
+    as gt isn't returning non-zero exit codes for unknown commands.
+    """
+
+    # fmt: off
+    known_commands = {
+        # Setup commands
+        "auth", "init",
+        
+        # Core workflow commands  
+        "create", "c",  # create alias
+        "modify", "m",  # modify alias
+        "submit", "s",  # submit alias
+        "sync",
+        
+        # Stack navigation
+        "bottom", "b",     # bottom alias
+        "checkout", "co",  # checkout alias  
+        "down", "d",       # down alias
+        "top", "t",        # top alias
+        "trunk",
+        "up", "u",         # up alias
+        
+        # Branch info
+        "children", "info", 
+        "log", "l",        # log alias
+        "parent",
+        
+        # Stack management
+        "absorb", "ab",    # absorb alias
+        "continue", "cont", # continue alias
+        "fold", "move", "reorder",
+        "restack", "r",    # restack alias
+        
+        # Branch management
+        "delete", "dl",    # delete alias
+        "get", "pop", 
+        "rename", "rn",    # rename alias
+        "revert", 
+        "split", "sp",     # split alias
+        "squash", "sq",    # squash alias
+        "track", "tr",     # track alias
+        "untrack", "utr",  # untrack alias
+        
+        # Graphite web
+        "dash", 
+        "interactive", "i", # interactive alias
+        "merge", "pr",
+        
+        # Configuration
+        "aliases", "completion", "config", "fish",
+        
+        # Learning & help
+        "changelog", "demo", "docs", "feedback",
+        "guide", "g",      # guide alias
+        
+        # Hidden
+        "state",
+        
+        # Other common commands
+        "help", "version"
+    }
+    # fmt: on
+
+    return command in known_commands
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help"]:
         print("Usage: python gt_commands.py [sync|submit|<gt command>]")
@@ -818,17 +892,12 @@ def main():
         dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
         submit_command(mode=mode, dry_run=dry_run)
     else:
-        # Check if command is a git alias, otherwise pass through to gt
-        gt_args = " ".join(f'"{arg}"' if " " in arg else arg for arg in sys.argv[1:])
-        try:
-            if is_git_alias(command):
-                # Pass git aliases directly to git
-                run_uncaptured_command(f"git {gt_args}")
-            else:
-                # Pass unknown commands to gt with properly quoted strings
-                run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
-        except:  # noqa: E722
-            sys.exit(1)
+        if is_valid_gt_command(command):
+            run_uncaptured_command(f"{OG_GT_PATH} {command}")
+        elif is_git_alias(command):
+            run_uncaptured_command(f"git {command}")
+        else:
+            run_uncaptured_command(f"{OG_GT_PATH} {command}")
 
 
 if __name__ == "__main__":
