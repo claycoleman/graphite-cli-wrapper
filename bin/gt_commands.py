@@ -277,6 +277,111 @@ BranchSubmitStatus = Literal["updated", "created", "to-create"]
 STACK_COMMENT_PREFIX = "### Stack\n"
 
 
+def get_stack_comment_from_pr(branch: str) -> tuple[str | None, str]:
+    """
+    Get the stack comment ID and body from a PR.
+    Returns (comment_id, comment_body) or (None, "") if no stack comment found.
+    """
+    comments = run_command(
+        f"gh pr view {branch} --json comments --jq '.comments[] | {{id: .id, body: .body}}'",
+    ).split("\n")
+
+    for comment in comments:
+        if comment and "body" in comment:
+            comment_data = eval(comment)
+            if comment_data["body"].startswith(STACK_COMMENT_PREFIX):
+                return comment_data["id"], comment_data["body"]
+
+    return None, ""
+
+
+def parse_historical_branches_from_comment(
+    comment_body: str, pr_info: PRInfo
+) -> tuple[list[str], dict[str, BranchInfo]]:
+    """
+    Parse historical branches from an existing stack comment.
+    Returns (historical_branches, historical_pr_info) for branches that exist in the comment
+    but appear BEFORE the current lowest branch (i.e., merged branches).
+    """
+    if not comment_body.startswith(STACK_COMMENT_PREFIX):
+        return [], {}
+
+    lines = comment_body.split("\n")
+    historical_branches: list[str] = []
+    historical_pr_info: dict[str, BranchInfo] = {}
+    
+    # Find the position of the current lowest branch in the comment
+    current_lowest_position = -1
+    current_pr_urls = {branch_info["url"] for branch_info in pr_info["branches"].values()}
+    
+    # First pass: find where the current lowest branch appears
+    for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
+        line = line.strip()
+        if not line or not line.startswith(("├─", "└─")):
+            continue
+
+        # Extract content after tree characters
+        content = line[2:].strip()
+        if content.startswith("─"):
+            content = content[1:].strip()
+
+        # Look for PR pattern: "Title (#123)"
+        if "(#" in content and ")" in content:
+            pr_start = content.rfind("(#")
+            pr_end = content.rfind(")")
+            if pr_start != -1 and pr_end != -1:
+                pr_number = content[pr_start + 2 : pr_end]
+                pr_url = f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
+                
+                # If this PR is in our current stack, mark this position
+                if pr_url in current_pr_urls:
+                    current_lowest_position = i
+                    break  # Found the first (lowest) current branch
+    
+    # If no current branch found in comment, return empty (can't determine historical context)
+    if current_lowest_position == -1:
+        return [], {}
+    
+    # Second pass: collect branches that appear BEFORE the current lowest position
+    for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
+        if i >= current_lowest_position:  # Stop when we reach current branches
+            break
+            
+        line = line.strip()
+        if not line or not line.startswith(("├─", "└─")):
+            continue
+
+        # Extract content after tree characters
+        content = line[2:].strip()
+        if content.startswith("─"):
+            content = content[1:].strip()
+
+        # Look for PR pattern: "Title (#123)"
+        if "(#" in content and ")" in content:
+            pr_start = content.rfind("(#")
+            pr_end = content.rfind(")")
+            if pr_start != -1 and pr_end != -1:
+                pr_number = content[pr_start + 2 : pr_end]
+                title = content[:pr_start].strip()
+
+                # Remove current branch indicator if present (shouldn't be, but just in case)
+                if title.startswith("**") and title.endswith(" ⬅️**"):
+                    title = title[2:-6].strip()
+                elif title.startswith("**") and title.endswith("**"):
+                    title = title[2:-2].strip()
+
+                # This is a historical branch (appears before current lowest)
+                pr_url = f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
+                historical_pr_info[f"historical_{pr_number}"] = {
+                    "url": pr_url,
+                    "base": "main",  # We don't know the actual base, but this is reasonable
+                    "title": title,
+                }
+                historical_branches.append(f"historical_{pr_number}")
+
+    return historical_branches, historical_pr_info
+
+
 def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str) -> str:
     """Format a comment showing the stack hierarchy with PR numbers and titles."""
     # Start from main
@@ -303,42 +408,92 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
     return "\n".join(lines)
 
 
-def add_stack_comments(stack: list[str], dry_run: bool, start_index: int = 0):
-    """Add comments to all PRs in the stack showing their relationships."""
+def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list[str]):
+    """Add comments to submitted PRs and downstack PRs in the stack showing their relationships."""
     # Refresh PR info to get all newly created PRs
     updated_pr_info = get_pr_info()
 
-    # Add comments to all PRs in the stack from start_index
-    for branch in stack[start_index:]:
+    # Find the lowest branch in the stack that has a PR to use as source of truth
+    source_of_truth_comment = ""
+    lowest_branch_with_pr = None
+
+    for branch in stack:
         if branch != "main" and branch in updated_pr_info["branches"]:
-            print(f"Adding stack comment to PR for {branch}")
+            lowest_branch_with_pr = branch
+            break
 
-            # Get all comments with their IDs in one query
-            comments = run_command(
-                f"gh pr view {branch} --json comments --jq '.comments[] | {{id: .id, body: .body}}'",
-            ).split("\n")
+    # Get the source of truth comment from the lowest branch and create extended stack ONCE
+    extended_stack = stack
+    extended_pr_info = updated_pr_info
 
-            comment_id = None
-            for comment in comments:
-                if comment and "body" in comment:  # ensure comment is not empty
-                    comment_data = eval(comment)
-                    if comment_data["body"].startswith(STACK_COMMENT_PREFIX):
-                        comment_id = comment_data["id"]
-                        break
+    if lowest_branch_with_pr:
+        print(
+            f"Using {lowest_branch_with_pr} as source of truth for historical context"
+        )
+        _, source_of_truth_comment = get_stack_comment_from_pr(lowest_branch_with_pr)
 
-            stack_comment = format_stack_comment(stack, updated_pr_info, branch)
-            if comment_id:
-                # Update existing comment using GraphQL API
-                run_update_command(
-                    f'gh api graphql -f id="{comment_id}" -f body="{stack_comment}" -f query=\'mutation($id: ID!, $body: String!) {{ updateIssueComment(input: {{ id: $id, body: $body }}) {{ issueComment {{ bodyText }} }} }}\'',
-                    dry_run=dry_run,
+        if source_of_truth_comment:
+            # Parse historical branches and extend the stack
+            historical_branches, historical_pr_info = (
+                parse_historical_branches_from_comment(
+                    source_of_truth_comment, updated_pr_info
                 )
-            else:
-                # Create new comment
-                run_update_command(
-                    f'gh pr comment {branch} --body "{stack_comment}"',
-                    dry_run=dry_run,
+            )
+            if historical_branches:
+                extended_stack = historical_branches + stack
+                extended_pr_info = PRInfo(
+                    owner=updated_pr_info["owner"],
+                    repo=updated_pr_info["repo"],
+                    branches={**historical_pr_info, **updated_pr_info["branches"]},
                 )
+
+    # Find the lowest submitted branch index efficiently (O(n) with set lookup)
+    submitted_set = set(submitted_branches)  # O(1) lookup
+    lowest_submitted_index = len(stack)
+    for i, branch in enumerate(stack):
+        if branch in submitted_set:  # O(1) lookup
+            lowest_submitted_index = i
+            break
+
+    # Update submitted branches + all downstack branches that have PRs
+    downstack_branches = (
+        stack[:lowest_submitted_index] if lowest_submitted_index < len(stack) else []
+    )
+    branches_to_update = list(set(submitted_branches + downstack_branches))
+    branches_to_update = [
+        b
+        for b in branches_to_update
+        if b != "main" and b in updated_pr_info["branches"]
+    ]
+
+    if not branches_to_update:
+        print("No branches with PRs to update")
+        return
+
+    print(f"Updating stack comments for: {', '.join(branches_to_update)}")
+
+    for branch in branches_to_update:
+        print(f"Updating stack comment for PR: {branch}")
+
+        # Get comment ID for this branch
+        comment_id, _ = get_stack_comment_from_pr(branch)
+
+        # Generate stack comment using the extended stack (same for all branches)
+        # Current branch is in the original stack
+        stack_comment = format_stack_comment(extended_stack, extended_pr_info, branch)
+
+        if comment_id:
+            # Update existing comment using GraphQL API
+            run_update_command(
+                f'gh api graphql -f id="{comment_id}" -f body="{stack_comment}" -f query=\'mutation($id: ID!, $body: String!) {{ updateIssueComment(input: {{ id: $id, body: $body }}) {{ issueComment {{ bodyText }} }} }}\'',
+                dry_run=dry_run,
+            )
+        else:
+            # Create new comment
+            run_update_command(
+                f'gh pr comment {branch} --body "{stack_comment}"',
+                dry_run=dry_run,
+            )
 
 
 def submit_branch(
@@ -531,13 +686,10 @@ def submit_command(
         url, status = submit_branch(branch, parent_branch, dry_run, pr_info)
         pr_urls.append((branch, url, status))
 
-    if len(full_stack) > 1:
-        print("\nAdding stack references to PRs...")
-        # For whole-stack mode, start from index 0 instead of current_index
-        start_index = 0 if mode in ["whole-stack", "downstack"] else current_index
-        add_stack_comments(full_stack, dry_run, start_index)
-    else:
-        print("\nSingle PR, skipping stack references.")
+    # Update stack references for submitted and downstack PRs
+    print("\nUpdating stack references...")
+    submitted_branch_names = [branch for _, branch in branches_to_submit]
+    add_stack_comments(full_stack, dry_run, submitted_branch_names)
 
     # Return to initial branch
     run_command(f"git checkout {current_branch}")
