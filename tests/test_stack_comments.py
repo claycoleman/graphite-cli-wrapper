@@ -101,7 +101,7 @@ main
         # Invalid comment (doesn't start with prefix)
         historical_branches, historical_pr_info = (
             parse_historical_branches_from_comment(
-                "Just a regular comment", self.sample_pr_info
+                "Just a regular comment!", self.sample_pr_info
             )
         )
         self.assertEqual(len(historical_branches), 0)
