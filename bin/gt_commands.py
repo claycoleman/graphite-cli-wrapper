@@ -470,8 +470,6 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
         print("No branches with PRs to update")
         return
 
-    print(f"Updating stack comments for: {', '.join(branches_to_update)}")
-
     for branch in branches_to_update:
         print(f"Updating stack comment for PR: {branch}")
 
