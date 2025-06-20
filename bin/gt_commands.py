@@ -892,12 +892,13 @@ def main():
         dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
         submit_command(mode=mode, dry_run=dry_run)
     else:
+        gt_args = " ".join(f'"{arg}"' if " " in arg else arg for arg in sys.argv[1:])
         if is_valid_gt_command(command):
-            run_uncaptured_command(f"{OG_GT_PATH} {command}")
+            run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
         elif is_git_alias(command):
-            run_uncaptured_command(f"git {command}")
+            run_uncaptured_command(f"git {gt_args}")
         else:
-            run_uncaptured_command(f"{OG_GT_PATH} {command}")
+            run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
 
 
 if __name__ == "__main__":
