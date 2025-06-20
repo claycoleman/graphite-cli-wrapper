@@ -3,7 +3,7 @@
 import subprocess
 import sys
 import os
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, Any, cast
 
 
 def run_uncaptured_command(command: str):
@@ -79,15 +79,17 @@ def get_og_gt_path():
     # Use realpath to follow symlinks to get the actual script location
     script_path = os.path.realpath(__file__)
     script_dir = os.path.dirname(script_path)
-    gt_path = os.path.join(script_dir, '../node_modules/@withgraphite/graphite-cli/graphite.js')
-    
+    gt_path = os.path.join(
+        script_dir, "../node_modules/@withgraphite/graphite-cli/graphite.js"
+    )
+
     if not os.path.isfile(gt_path):
         print(
             f"{COLORS['RED']}❌ Error: Could not find the bundled Graphite CLI at {gt_path}{COLORS['RESET']}"
         )
         print("Please ensure the package installation completed successfully.")
         sys.exit(1)
-    
+
     return gt_path
 
 
@@ -563,25 +565,33 @@ def is_git_alias(command: str) -> bool:
         result = subprocess.run(
             ["git", "config", "--get", f"alias.{command}"],
             capture_output=True,
-            text=True
+            text=True,
         )
         return result.returncode == 0
     except subprocess.SubprocessError:
         return False
 
 
-def get_wrapper_version():
+def get_wrapper_version() -> str:
     """Get the version of the wrapper package from package.json."""
     try:
         import json
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        package_json_path = os.path.join(script_dir, '../package.json')
-        
-        with open(package_json_path, 'r') as f:
-            package_data = json.load(f)
-            return package_data.get('version', 'unknown')
+
+        # Follow symlinks to get the real path of this script
+        script_real_path = os.path.realpath(__file__)
+        script_dir = os.path.dirname(script_real_path)
+
+        # package.json should be one level up from bin/
+        package_json_path = os.path.join(script_dir, "..", "package.json")
+
+        if os.path.exists(package_json_path):
+            with open(package_json_path, "r") as f:
+                package_data = cast(dict[str, Any], json.load(f))
+                return package_data.get("version", "unknown")
     except Exception:
-        return 'unknown'
+        pass
+
+    return "unknown"
 
 
 def get_graphite_version():
@@ -590,14 +600,14 @@ def get_graphite_version():
         output = run_command(f"{OG_GT_PATH} --version", show_output_in_terminal=False)
         return output.strip()
     except Exception:
-        return 'unknown'
+        return "unknown"
 
 
 def show_version():
     """Show version information for both wrapper and bundled Graphite CLI."""
     wrapper_version = get_wrapper_version()
     graphite_version = get_graphite_version()
-    
+
     print(f"GT Wrapper: {wrapper_version}")
     print(f"Bundled Graphite CLI: {graphite_version}")
 
@@ -635,12 +645,12 @@ def main():
         sys.exit(1)
 
     command = sys.argv[1]
-    
+
     # Handle version command specially
     if command in ["--version", "-v", "version"]:
         show_version()
         sys.exit(0)
-    
+
     if command == "sync":
         dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
         skip_restack = "--skip-restack" in sys.argv or "-sr" in sys.argv
