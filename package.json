@@ -1,0 +1,41 @@
+{
+  "name": "@claycoleman/gt-wrapper",
+  "version": "1.0.0",
+  "description": "Enhanced Graphite CLI with custom sync/submit commands - drop-in replacement for gt/graphite",
+  "bin": {
+    "gt": "./bin/gt_commands.py",
+    "graphite": "./bin/gt_commands.py"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "echo \"Preparing for publish...\""
+  },
+  "keywords": [
+    "graphite",
+    "git",
+    "cli",
+    "gt",
+    "stacking",
+    "pull-requests"
+  ],
+  "author": "ccoleman",
+  "license": "MIT",
+  "dependencies": {
+    "@withgraphite/graphite-cli": "1.4.3"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/claycoleman/graphite-cli-wrapper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/claycoleman/graphite-cli-wrapper/issues"
+  },
+  "homepage": "https://github.com/claycoleman/graphite-cli-wrapper#readme"
+}

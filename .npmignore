@@ -1,0 +1,22 @@
+# Development files
+install.sh
+test_install.sh
+gt_commands.py
+*.py
+!python/
+
+# Git and system files
+.git/
+.DS_Store
+.gitignore
+
+# Other scripts not part of the package
+*.sh
+*.scpt
+*.swift
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo 
