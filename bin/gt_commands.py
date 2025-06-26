@@ -11,11 +11,43 @@ def run_uncaptured_command(command: str):
     subprocess.run(command, shell=True, capture_output=False, text=True)
 
 
+def filter_graphite_warnings(output: str) -> str:
+    """
+    Filter out Graphite CLI version warnings from command output.
+    These warnings can interfere with parsing the actual command results.
+    """
+    lines = output.splitlines()
+    filtered_lines: list[str] = []
+    skip_mode = False
+    
+    for line in lines:
+        # Check if this line starts a warning block
+        if "ℹ️ The Graphite CLI version you have installed" in line:
+            skip_mode = True
+            continue
+        
+        # Check if this line ends a warning block
+        if skip_mode and "- Team Graphite :)" in line:
+            skip_mode = False
+            continue
+        
+        # Skip lines that are part of the warning block
+        if skip_mode:
+            continue
+        
+        # Keep lines that contain brew/npm update instructions but aren't part of warning block
+        if not skip_mode:
+            filtered_lines.append(line)
+    
+    return "\n".join(filtered_lines).strip()
+
+
 def run_command(command: str, show_output_in_terminal: bool = False) -> str:
     """
     Run a shell command and return the output.
     If show_output_in_terminal is True, print the output to the terminal.
     In the case of any failure, print all stderr and exit with a non-zero code.
+    Automatically filters out Graphite CLI version warnings from output.
     """
     process = subprocess.Popen(
         command,
@@ -51,7 +83,8 @@ def run_command(command: str, show_output_in_terminal: bool = False) -> str:
         )
         exit(1)
 
-    return output
+    # Filter out Graphite CLI version warnings
+    return filter_graphite_warnings(output)
 
 
 def run_update_command(

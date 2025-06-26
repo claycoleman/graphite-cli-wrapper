@@ -1,0 +1,3 @@
+[x] Add a way to filter out Graphite CLI version warnings from command output.
+[ ] If i have branch A and B on top of A, then A gets merged and I run `gt sync`, branch B is correctly restacked on top of trunk. however, running gt submit doesn't parse the stack comment properly and removes the previous stack from the PR. And our tests don't fail even though in practice the PR comment is not properly updated. I think it might be due to the fact that we changed the dividers between stack comments.
+[ ] Add better CLI support without preventing passing CLI args to the original Graphite CLI?
