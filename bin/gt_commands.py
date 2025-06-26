@@ -1085,7 +1085,9 @@ def main():
     start_background_version_check()
 
     if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help"]:
-        print("Usage: python gt_commands.py [sync|submit|<gt command>]")
+        print("GT Wrapper - Enhanced Graphite CLI with paywall-less sync/submit commands")
+        print("\nUsage: gt [sync|submit|<gt command>]")
+        print("\nCustom Commands:")
         print("  sync options:")
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
         print("    --skip-restack, -sr Skip running 'gt restack' at the end")
@@ -1100,8 +1102,7 @@ def main():
         print("    --whole-stack, -w   Submit all branches in the stack")
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
 
-        # also print out the gt-bin help
-        print("Original gt-cli help:")
+        print("\nOriginal Graphite CLI Help:")
         print(get_gt_help())
 
         # Show update notification before exiting
