@@ -3,6 +3,7 @@
 import subprocess
 import sys
 import os
+import re
 from typing import Literal, TypedDict, Any, cast
 
 
@@ -19,26 +20,26 @@ def filter_graphite_warnings(output: str) -> str:
     lines = output.splitlines()
     filtered_lines: list[str] = []
     skip_mode = False
-    
+
     for line in lines:
         # Check if this line starts a warning block
         if "ℹ️ The Graphite CLI version you have installed" in line:
             skip_mode = True
             continue
-        
+
         # Check if this line ends a warning block
         if skip_mode and "- Team Graphite :)" in line:
             skip_mode = False
             continue
-        
+
         # Skip lines that are part of the warning block
         if skip_mode:
             continue
-        
+
         # Keep lines that contain brew/npm update instructions but aren't part of warning block
         if not skip_mode:
             filtered_lines.append(line)
-    
+
     return "\n".join(filtered_lines).strip()
 
 
@@ -309,6 +310,15 @@ BranchSubmitStatus = Literal["updated", "created", "to-create"]
 
 STACK_COMMENT_PREFIX = "### Stack\n"
 
+# Stack comment formatting constants - shared between format and parse functions
+STACK_TREE_BRANCH = "├"  # Branch connector (T-shape)
+STACK_TREE_LAST = "└"  # Last item connector (L-shape)
+STACK_TREE_LINE = "─"  # Horizontal line connector
+CURRENT_BRANCH_PREFIX = "**"
+CURRENT_BRANCH_SUFFIX = " ⬅️**"
+PR_NUMBER_PREFIX = "(#"
+PR_NUMBER_SUFFIX = ")"
+
 
 def get_stack_comment_from_pr(branch: str) -> tuple[str | None, str]:
     """
@@ -326,6 +336,66 @@ def get_stack_comment_from_pr(branch: str) -> tuple[str | None, str]:
                 return comment_data["id"], comment_data["body"]
 
     return None, ""
+
+
+def _format_stack_line(
+    branch_index: int,
+    total_branches: int,
+    pr_title: str,
+    pr_number: str,
+    is_current: bool = False,
+) -> str:
+    """
+    Format a single stack comment line using shared constants.
+    This ensures consistent formatting logic.
+    """
+    is_last = branch_index == total_branches - 1
+    tree_char = STACK_TREE_LAST if is_last else STACK_TREE_BRANCH
+    indent = STACK_TREE_LINE * branch_index
+
+    # Add current branch indicator if needed
+    pr_text = f"{pr_title} {PR_NUMBER_PREFIX}{pr_number}{PR_NUMBER_SUFFIX}"
+    if is_current:
+        pr_text = f"{CURRENT_BRANCH_PREFIX}{pr_text}{CURRENT_BRANCH_SUFFIX}"
+
+    return f"{tree_char}{indent} {pr_text}"
+
+
+def _parse_stack_line(line: str) -> tuple[str, str] | None:
+    """
+    Parse a stack comment line and extract the PR number and title.
+    Returns (pr_number, title) or None if the line is not a valid stack entry.
+    This ensures consistent parsing logic between format and parse functions.
+    """
+    line = line.strip()
+    if not line or not line.startswith((STACK_TREE_BRANCH, STACK_TREE_LAST)):
+        return None
+
+    # Use regex to parse the line format: ^[├└][─]* [**]?Title (#123)
+    # This handles:
+    # - Tree characters (├ or └) with any number of dashes
+    # - Optional current branch indicators (**...**)
+    # - Title and PR number in format (#123)
+    # - Malformed current indicators (** without arrow)
+
+        # Build regex pattern using our constants for better maintainability
+    tree_chars = re.escape(STACK_TREE_BRANCH) + re.escape(STACK_TREE_LAST)
+    tree_line = re.escape(STACK_TREE_LINE)
+    current_prefix = re.escape(CURRENT_BRANCH_PREFIX)
+    pr_prefix = re.escape(PR_NUMBER_PREFIX)
+    pr_suffix = re.escape(PR_NUMBER_SUFFIX)
+    
+    # Single capture group for title, with optional current branch indicators
+    pattern = rf"^[{tree_chars}]{tree_line}*\s+(?:{current_prefix})?(?P<title>.*?)\s+{pr_prefix}(?P<pr_number>\d+){pr_suffix}"
+    
+    match = re.match(pattern, line, re.DOTALL)  # DOTALL allows . to match newlines
+    if match:
+        title = match.group('title').strip()
+        pr_number = match.group('pr_number')
+        
+        return pr_number, title
+
+    return None
 
 
 def parse_historical_branches_from_comment(
@@ -351,27 +421,19 @@ def parse_historical_branches_from_comment(
 
     # First pass: find where the current lowest branch appears
     for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
-        line = line.strip()
-        if not line or not line.startswith(("├─", "└─")):
+        parsed = _parse_stack_line(line)
+        if not parsed:
             continue
 
-        # Extract content after tree characters
-        content = line[2:].strip()
-        if content.startswith("─"):
-            content = content[1:].strip()
+        pr_number, _ = parsed
+        pr_url = (
+            f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
+        )
 
-        # Look for PR pattern: "Title (#123)"
-        if "(#" in content and ")" in content:
-            pr_start = content.rfind("(#")
-            pr_end = content.rfind(")")
-            if pr_start != -1 and pr_end != -1:
-                pr_number = content[pr_start + 2 : pr_end]
-                pr_url = f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
-
-                # If this PR is in our current stack, mark this position
-                if pr_url in current_pr_urls:
-                    current_lowest_position = i
-                    break  # Found the first (lowest) current branch
+        # If this PR is in our current stack, mark this position
+        if pr_url in current_pr_urls:
+            current_lowest_position = i
+            break  # Found the first (lowest) current branch
 
     # If no current branch found in comment, return empty (can't determine historical context)
     if current_lowest_position == -1:
@@ -382,37 +444,22 @@ def parse_historical_branches_from_comment(
         if i >= current_lowest_position:  # Stop when we reach current branches
             break
 
-        line = line.strip()
-        if not line or not line.startswith(("├─", "└─")):
+        parsed = _parse_stack_line(line)
+        if not parsed:
             continue
 
-        # Extract content after tree characters
-        content = line[2:].strip()
-        if content.startswith("─"):
-            content = content[1:].strip()
+        pr_number, title = parsed
 
-        # Look for PR pattern: "Title (#123)"
-        if "(#" in content and ")" in content:
-            pr_start = content.rfind("(#")
-            pr_end = content.rfind(")")
-            if pr_start != -1 and pr_end != -1:
-                pr_number = content[pr_start + 2 : pr_end]
-                title = content[:pr_start].strip()
-
-                # Remove current branch indicator if present (shouldn't be, but just in case)
-                if title.startswith("**") and title.endswith(" ⬅️**"):
-                    title = title[2:-6].strip()
-                elif title.startswith("**") and title.endswith("**"):
-                    title = title[2:-2].strip()
-
-                # This is a historical branch (appears before current lowest)
-                pr_url = f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
-                historical_pr_info[f"historical_{pr_number}"] = {
-                    "url": pr_url,
-                    "base": "main",  # We don't know the actual base, but this is reasonable
-                    "title": title,
-                }
-                historical_branches.append(f"historical_{pr_number}")
+        # This is a historical branch (appears before current lowest)
+        pr_url = (
+            f"https://github.com/{pr_info['owner']}/{pr_info['repo']}/pull/{pr_number}"
+        )
+        historical_pr_info[f"historical_{pr_number}"] = {
+            "url": pr_url,
+            "base": "main",  # We don't know the actual base, but this is reasonable
+            "title": title,
+        }
+        historical_branches.append(f"historical_{pr_number}")
 
     return historical_branches, historical_pr_info
 
@@ -421,24 +468,22 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
     """Format a comment showing the stack hierarchy with PR numbers and titles."""
     # Start from main
     lines = [STACK_COMMENT_PREFIX, "main"]
+
     for i, branch in enumerate(stack):
-        is_last = i == len(stack) - 1
-        prefix = "└" if is_last else "├"  # L-shape for last item, T-shape for others
-        indent = "─" * (i)  # Vertical bars for indent
         # Get PR number and title from URL if it exists
-        pr_text = "PR pending"
+        pr_title = "PR pending"
+        pr_number = "N/A"
         if branch in pr_info["branches"]:
             url = pr_info["branches"][branch]["url"]
             pr_number = url.split("/")[-1]
-            title = pr_info["branches"][branch]["title"]
-            # github automatically links PR numbers in comments
-            pr_text = f"{title} (#{pr_number})"
 
-        # Bold and add emoji to the current branch's PR info
-        if branch == current_branch:
-            pr_text = f"**{pr_text} ⬅️**"
+            pr_title = pr_info["branches"][branch]["title"]
 
-        lines.append(f"{prefix}{indent} {pr_text}")
+        # Use shared formatting utility to ensure consistency with parsing
+        formatted_line = _format_stack_line(
+            i, len(stack), pr_title, pr_number, branch == current_branch
+        )
+        lines.append(formatted_line)
 
     return "\n".join(lines)
 
