@@ -822,11 +822,10 @@ def get_wrapper_version() -> str:
         if os.path.exists(package_json_path):
             with open(package_json_path, "r") as f:
                 package_data = cast(dict[str, Any], json.load(f))
-                return package_data.get("version", "unknown")
+                return package_data["version"]
+        raise Exception("package.json not found")
     except Exception:
-        pass
-
-    return "unknown"
+        raise Exception("Failed to get wrapper version")
 
 
 def get_graphite_version():
@@ -852,10 +851,10 @@ def get_cache_file_path() -> str:
     # Use user's home directory for persistent cache storage
     home_dir = os.path.expanduser("~")
     cache_dir = os.path.join(home_dir, ".gt-wrapper")
-    
+
     # Create cache directory if it doesn't exist
     os.makedirs(cache_dir, exist_ok=True)
-    
+
     return os.path.join(cache_dir, "version_cache.json")
 
 
@@ -933,36 +932,47 @@ def check_for_updates_async() -> None:
         return
 
     current_version = get_wrapper_version()
-    if current_version == "unknown":
-        return
-
     latest_version = get_latest_wrapper_version()
 
-    # Update cache
+    # Check if there's an update and we should show notification
+    has_update = latest_version is not None and compare_versions(
+        current_version, latest_version
+    )
+
+    # Update cache - only show notification when we just checked
     cache_data = {
         "last_check": datetime.now().isoformat(),
-        "current_version": current_version,
         "latest_version": latest_version,
-        "has_update": latest_version is not None
-        and compare_versions(current_version, latest_version),
+        "show_notification": has_update,  # Only show notification when we just checked
     }
     save_version_cache(cache_data)
 
 
 def display_update_notification() -> None:
-    """Display update notification if a newer version is available."""
+    """Display update notification only when we just checked for updates."""
     cache = load_version_cache()
 
-    if cache.get("has_update", False) and cache.get("latest_version"):
-        current = cache.get("current_version", "unknown")
-        latest = cache.get("latest_version", "unknown")
+    # Only show notification if we just checked and found an update
+    if not cache.get("show_notification", False):
+        return
 
-        print(
-            f"\n{COLORS['YELLOW']}📦 Update available: GT Wrapper {current} → {latest}{COLORS['RESET']}"
-        )
-        print(
-            f"{COLORS['BLUE']}   Run: npm install -g @claycoleman/gt-wrapper{COLORS['RESET']}"
-        )
+    latest_version = cache.get("latest_version")
+    if not latest_version:
+        return
+
+    # Always get fresh current version since it's a fast local read
+    current_version = get_wrapper_version()
+
+    print(
+        f"\n{COLORS['YELLOW']}📦 Update available: GT Wrapper {current_version} → {latest_version}{COLORS['RESET']}"
+    )
+    print(
+        f"{COLORS['BLUE']}   Run: npm install -g @claycoleman/gt-wrapper{COLORS['RESET']}"
+    )
+
+    # Clear the show_notification flag so we don't show it again until next check
+    cache["show_notification"] = False
+    save_version_cache(cache)
 
 
 # Global variable to track background version check
@@ -1085,7 +1095,9 @@ def main():
     start_background_version_check()
 
     if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help"]:
-        print("GT Wrapper - Enhanced Graphite CLI with paywall-less sync/submit commands")
+        print(
+            "GT Wrapper - Enhanced Graphite CLI with paywall-less sync/submit commands"
+        )
         print("\nUsage: gt [sync|submit|<gt command>]")
         print("\nCustom Commands:")
         print("  sync options:")

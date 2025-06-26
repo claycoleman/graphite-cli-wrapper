@@ -45,17 +45,14 @@ class TestVersionChecking(unittest.TestCase):
         # Test saving and loading cache
         test_data = {
             "last_check": "2024-01-01T12:00:00",
-            "current_version": "1.0.5",
-            "latest_version": "1.0.6",
-            "has_update": True
+            "latest_version": "1.0.6"
         }
         
         save_version_cache(test_data)
         loaded_data = load_version_cache()
         
-        self.assertEqual(loaded_data["current_version"], "1.0.5")
+        self.assertEqual(loaded_data["last_check"], "2024-01-01T12:00:00")
         self.assertEqual(loaded_data["latest_version"], "1.0.6")
-        self.assertTrue(loaded_data["has_update"])
         
     @patch('gt_commands.get_cache_file_path')
     def test_load_cache_nonexistent_file(self, mock_cache_path):
@@ -183,15 +180,18 @@ class TestVersionChecking(unittest.TestCase):
     @patch('gt_commands.get_latest_wrapper_version')
     @patch('gt_commands.get_wrapper_version')
     @patch('gt_commands.should_check_version')
-    def test_check_for_updates_async_unknown_version(self, mock_should_check,
-                                                     mock_get_wrapper, mock_get_latest,
-                                                     mock_save_cache):
-        """Test background update check with unknown current version."""
+    def test_check_for_updates_async_version_exception(self, mock_should_check,
+                                                       mock_get_wrapper, mock_get_latest,
+                                                       mock_save_cache):
+        """Test background update check when get_wrapper_version raises exception."""
         mock_should_check.return_value = True
-        mock_get_wrapper.return_value = "unknown"
+        mock_get_wrapper.side_effect = Exception("Failed to get wrapper version")
         
-        check_for_updates_async()
+        # Exception should be raised since check_for_updates_async doesn't handle it
+        with self.assertRaises(Exception) as cm:
+            check_for_updates_async()
         
+        self.assertEqual(str(cm.exception), "Failed to get wrapper version")
         mock_get_latest.assert_not_called()
         mock_save_cache.assert_not_called()
         
@@ -212,20 +212,24 @@ class TestVersionChecking(unittest.TestCase):
         mock_save_cache.assert_called_once()
         call_args = mock_save_cache.call_args[0][0]
         
-        self.assertEqual(call_args["current_version"], "1.0.5")
+        # Cache remote data and notification flag
         self.assertEqual(call_args["latest_version"], "1.0.6")
-        self.assertTrue(call_args["has_update"])
         self.assertIn("last_check", call_args)
+        self.assertTrue(call_args["show_notification"])  # Should show notification when update found
+        # These fields are no longer cached
+        self.assertNotIn("current_version", call_args)
         
+    @patch('gt_commands.save_version_cache')
+    @patch('gt_commands.get_wrapper_version')
     @patch('gt_commands.load_version_cache')
     @patch('builtins.print')
-    def test_display_update_notification_with_update(self, mock_print, mock_load_cache):
-        """Test displaying update notification when update is available."""
+    def test_display_update_notification_with_update(self, mock_print, mock_load_cache, mock_get_wrapper, mock_save_cache):
+        """Test displaying update notification when update is available and show_notification is True."""
         mock_load_cache.return_value = {
-            "has_update": True,
-            "current_version": "1.0.5",
-            "latest_version": "1.0.6"
+            "latest_version": "1.0.6",
+            "show_notification": True
         }
+        mock_get_wrapper.return_value = "1.0.5"  # Current version is older
         
         display_update_notification()
         
@@ -237,19 +241,56 @@ class TestVersionChecking(unittest.TestCase):
         notification_found = any("1.0.5 → 1.0.6" in call for call in print_calls)
         self.assertTrue(notification_found)
         
+        # Verify that show_notification flag was cleared
+        mock_save_cache.assert_called_once()
+        saved_cache = mock_save_cache.call_args[0][0]
+        self.assertFalse(saved_cache["show_notification"])
+        
+    @patch('gt_commands.get_wrapper_version')
     @patch('gt_commands.load_version_cache')
     @patch('builtins.print')
-    def test_display_update_notification_no_update(self, mock_print, mock_load_cache):
-        """Test no notification when no update is available."""
+    def test_display_update_notification_no_show_flag(self, mock_print, mock_load_cache, mock_get_wrapper):
+        """Test no notification when show_notification flag is False."""
         mock_load_cache.return_value = {
-            "has_update": False,
-            "current_version": "1.0.6",
-            "latest_version": "1.0.6"
+            "latest_version": "1.0.6",
+            "show_notification": False
         }
         
         display_update_notification()
         
-        # Should not print anything
+        # Should not print anything and should not call get_wrapper_version
+        mock_print.assert_not_called()
+        mock_get_wrapper.assert_not_called()
+
+    @patch('gt_commands.get_wrapper_version')
+    @patch('gt_commands.load_version_cache')
+    @patch('builtins.print')
+    def test_display_update_notification_no_cache(self, mock_print, mock_load_cache, mock_get_wrapper):
+        """Test no notification when cache is empty."""
+        mock_load_cache.return_value = {}
+        
+        display_update_notification()
+        
+        # Should not print anything and should not call get_wrapper_version
+        mock_print.assert_not_called()
+        mock_get_wrapper.assert_not_called()
+
+    @patch('gt_commands.get_wrapper_version')
+    @patch('gt_commands.load_version_cache')
+    @patch('builtins.print')
+    def test_display_update_notification_version_exception(self, mock_print, mock_load_cache, mock_get_wrapper):
+        """Test exception propagation when get_wrapper_version raises exception."""
+        mock_load_cache.return_value = {
+            "latest_version": "1.0.6",
+            "show_notification": True
+        }
+        mock_get_wrapper.side_effect = Exception("Failed to get wrapper version")
+        
+        # Exception should be raised since display_update_notification doesn't handle it
+        with self.assertRaises(Exception) as cm:
+            display_update_notification()
+        
+        self.assertEqual(str(cm.exception), "Failed to get wrapper version")
         mock_print.assert_not_called()
         
     @patch('gt_commands.should_check_version')
@@ -387,9 +428,11 @@ class TestVersionChecking(unittest.TestCase):
             self.assertTrue(os.path.exists(test_cache_file))
             with open(test_cache_file, 'r') as f:
                 cache_data = json.load(f)
-                self.assertEqual(cache_data["current_version"], "1.0.5")
                 self.assertEqual(cache_data["latest_version"], "1.0.6")
-                self.assertTrue(cache_data["has_update"])
+                self.assertIn("last_check", cache_data)
+                self.assertTrue(cache_data["show_notification"])
+                # These fields are no longer cached
+                self.assertNotIn("current_version", cache_data)
 
     
 
