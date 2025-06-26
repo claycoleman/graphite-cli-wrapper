@@ -4,6 +4,11 @@ import subprocess
 import sys
 import os
 import re
+import threading
+import json
+import urllib.request
+import urllib.error
+from datetime import datetime, timedelta
 from typing import Literal, TypedDict, Any, cast
 
 
@@ -378,21 +383,21 @@ def _parse_stack_line(line: str) -> tuple[str, str] | None:
     # - Title and PR number in format (#123)
     # - Malformed current indicators (** without arrow)
 
-        # Build regex pattern using our constants for better maintainability
+    # Build regex pattern using our constants for better maintainability
     tree_chars = re.escape(STACK_TREE_BRANCH) + re.escape(STACK_TREE_LAST)
     tree_line = re.escape(STACK_TREE_LINE)
     current_prefix = re.escape(CURRENT_BRANCH_PREFIX)
     pr_prefix = re.escape(PR_NUMBER_PREFIX)
     pr_suffix = re.escape(PR_NUMBER_SUFFIX)
-    
+
     # Single capture group for title, with optional current branch indicators
     pattern = rf"^[{tree_chars}]{tree_line}*\s+(?:{current_prefix})?(?P<title>.*?)\s+{pr_prefix}(?P<pr_number>\d+){pr_suffix}"
-    
+
     match = re.match(pattern, line, re.DOTALL)  # DOTALL allows . to match newlines
     if match:
-        title = match.group('title').strip()
-        pr_number = match.group('pr_number')
-        
+        title = match.group("title").strip()
+        pr_number = match.group("pr_number")
+
         return pr_number, title
 
     return None
@@ -842,6 +847,157 @@ def show_version():
     print(f"Bundled Graphite CLI: {graphite_version}")
 
 
+def get_cache_file_path() -> str:
+    """Get the path for the version check cache file."""
+    # Use user's home directory for persistent cache storage
+    home_dir = os.path.expanduser("~")
+    cache_dir = os.path.join(home_dir, ".gt-wrapper")
+    
+    # Create cache directory if it doesn't exist
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    return os.path.join(cache_dir, "version_cache.json")
+
+
+def load_version_cache() -> dict[str, Any]:
+    """Load version check cache from file."""
+    cache_file = get_cache_file_path()
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, "r") as f:
+                return cast(dict[str, Any], json.load(f))
+    except Exception:
+        pass
+    return {}
+
+
+def save_version_cache(cache_data: dict[str, Any]) -> None:
+    """Save version check cache to file."""
+    cache_file = get_cache_file_path()
+    try:
+        with open(cache_file, "w") as f:
+            json.dump(cache_data, f)
+    except Exception:
+        pass
+
+
+def should_check_version() -> bool:
+    """Check if we should perform a version check based on cache."""
+    cache = load_version_cache()
+
+    if "last_check" not in cache:
+        return True
+
+    try:
+        last_check = datetime.fromisoformat(cache["last_check"])
+        # Check once per day
+        return datetime.now() - last_check > timedelta(days=1)
+    except Exception:
+        return True
+
+
+def get_latest_wrapper_version() -> str | None:
+    """Fetch the latest version from npm registry."""
+    try:
+        # Use npm registry API to get latest version
+        url = "https://registry.npmjs.org/@claycoleman/gt-wrapper/latest"
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "gt-wrapper-version-check")
+
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return data.get("version")
+    except Exception:
+        return None
+
+
+def compare_versions(current: str, latest: str) -> bool:
+    """Compare version strings. Returns True if latest > current."""
+    try:
+
+        def parse_version(v: str) -> tuple[int, int, int]:
+            parts = v.split(".")
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+
+        current_parts = parse_version(current)
+        latest_parts = parse_version(latest)
+
+        return latest_parts > current_parts
+    except Exception:
+        return False
+
+
+def check_for_updates_async() -> None:
+    """Background function to check for version updates."""
+    if not should_check_version():
+        return
+
+    current_version = get_wrapper_version()
+    if current_version == "unknown":
+        return
+
+    latest_version = get_latest_wrapper_version()
+
+    # Update cache
+    cache_data = {
+        "last_check": datetime.now().isoformat(),
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "has_update": latest_version is not None
+        and compare_versions(current_version, latest_version),
+    }
+    save_version_cache(cache_data)
+
+
+def display_update_notification() -> None:
+    """Display update notification if a newer version is available."""
+    cache = load_version_cache()
+
+    if cache.get("has_update", False) and cache.get("latest_version"):
+        current = cache.get("current_version", "unknown")
+        latest = cache.get("latest_version", "unknown")
+
+        print(
+            f"\n{COLORS['YELLOW']}📦 Update available: GT Wrapper {current} → {latest}{COLORS['RESET']}"
+        )
+        print(
+            f"{COLORS['BLUE']}   Run: npm install -g @claycoleman/gt-wrapper{COLORS['RESET']}"
+        )
+
+
+# Global variable to track background version check
+_version_check_thread: threading.Thread | None = None
+
+
+def start_background_version_check() -> None:
+    """Start background version checking if needed."""
+    global _version_check_thread
+
+    if _version_check_thread is not None:
+        return
+
+    if not should_check_version():
+        return
+
+    _version_check_thread = threading.Thread(
+        target=check_for_updates_async, daemon=True
+    )
+    _version_check_thread.start()
+
+
+def wait_for_version_check_and_notify() -> None:
+    """Wait for background version check to complete and show notification."""
+    global _version_check_thread
+
+    if _version_check_thread is not None:
+        # Wait for background check to complete (with timeout)
+        _version_check_thread.join(timeout=0.5)
+        _version_check_thread = None
+
+    # Display notification if update is available
+    display_update_notification()
+
+
 def get_gt_help():
     # capture the output of the gt help command, and hide anything from AUTHENTICATING down to TERMS
     help_output = run_command(f"{OG_GT_PATH} --help", show_output_in_terminal=False)
@@ -925,6 +1081,9 @@ def is_valid_gt_command(command: str) -> bool:
 
 
 def main():
+    # Start background version check early
+    start_background_version_check()
+
     if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help"]:
         print("Usage: python gt_commands.py [sync|submit|<gt command>]")
         print("  sync options:")
@@ -944,6 +1103,9 @@ def main():
         # also print out the gt-bin help
         print("Original gt-cli help:")
         print(get_gt_help())
+
+        # Show update notification before exiting
+        wait_for_version_check_and_notify()
         sys.exit(1)
 
     command = sys.argv[1]
@@ -951,6 +1113,8 @@ def main():
     # Handle version command specially
     if command in ["--version", "-v", "version"]:
         show_version()
+        # Show update notification for version command
+        wait_for_version_check_and_notify()
         sys.exit(0)
 
     if command == "sync":
@@ -977,6 +1141,9 @@ def main():
             run_uncaptured_command(f"git {gt_args}")
         else:
             run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
+
+    # Show update notification at the end of successful command execution
+    wait_for_version_check_and_notify()
 
 
 if __name__ == "__main__":
