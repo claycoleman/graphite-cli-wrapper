@@ -8,6 +8,7 @@ import threading
 import json
 import urllib.request
 import urllib.error
+import argparse
 from datetime import datetime, timedelta
 from typing import Literal, TypedDict, Any, cast
 
@@ -1090,6 +1091,62 @@ def is_valid_gt_command(command: str) -> bool:
     return command in known_commands
 
 
+def create_sync_parser() -> argparse.ArgumentParser:
+    """Create argument parser for the sync command."""
+    parser = argparse.ArgumentParser(
+        prog="gt sync",
+        description="Sync local branches with remote and clean up merged branches",
+        add_help=True
+    )
+    parser.add_argument(
+        "-d", "--dry-run",
+        action="store_true",
+        help="Run in dry-run mode (no changes made)"
+    )
+    parser.add_argument(
+        "-sr", "--skip-restack",
+        action="store_true", 
+        help="Skip running 'gt restack' at the end"
+    )
+    return parser
+
+
+def create_submit_parser() -> argparse.ArgumentParser:
+    """Create argument parser for the submit command."""
+    parser = argparse.ArgumentParser(
+        prog="gt submit",
+        description="Submit branches to create/update pull requests",
+        add_help=True
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "-si", "--single",
+        action="store_true",
+        help="Submit only the current branch"
+    )
+    mode_group.add_argument(
+        "-up", "--upstack", 
+        action="store_true",
+        help="Submit current branch and all branches that depend on it"
+    )
+    mode_group.add_argument(
+        "-dn", "--downstack",
+        action="store_true", 
+        help="Submit all branches that the current branch depends on"
+    )
+    mode_group.add_argument(
+        "-w", "--whole-stack",
+        action="store_true",
+        help="Submit all branches in the stack"
+    )
+    parser.add_argument(
+        "-d", "--dry-run",
+        action="store_true",
+        help="Run in dry-run mode (no changes made)"
+    )
+    return parser
+
+
 def main():
     # Start background version check early
     start_background_version_check()
@@ -1131,28 +1188,52 @@ def main():
         sys.exit(0)
 
     if command == "sync":
-        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-        skip_restack = "--skip-restack" in sys.argv or "-sr" in sys.argv
-        sync_command(dry_run=dry_run, skip_restack=skip_restack)
+        parser = create_sync_parser()
+        try:
+            args = parser.parse_args(sys.argv[2:])
+        except SystemExit:
+            # argparse calls sys.exit on error, but we want to show update notification
+            wait_for_version_check_and_notify()
+            raise
+            
+        sync_command(
+            dry_run=args.dry_run,
+            skip_restack=args.skip_restack, 
+            current_stack=args.current_stack
+        )
     elif command == "submit":
+        parser = create_submit_parser()
+        try:
+            args = parser.parse_args(sys.argv[2:])
+        except SystemExit:
+            # argparse calls sys.exit on error, but we want to show update notification
+            wait_for_version_check_and_notify()
+            raise
+            
+        # Determine mode from parsed arguments
         mode = "unset"
-        if "--single" in sys.argv or "-si" in sys.argv:
+        if args.single:
             mode = "single"
-        elif "--upstack" in sys.argv or "-up" in sys.argv:
+        elif args.upstack:
             mode = "upstack"
-        elif "--downstack" in sys.argv or "-dn" in sys.argv:
+        elif args.downstack:
             mode = "downstack"
-        elif "--whole-stack" in sys.argv or "-w" in sys.argv:
+        elif args.whole_stack:
             mode = "whole-stack"
-        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-        submit_command(mode=mode, dry_run=dry_run)
+            
+        submit_command(mode=mode, dry_run=args.dry_run)
     else:
         gt_args = " ".join(f'"{arg}"' if " " in arg else arg for arg in sys.argv[1:])
         if is_valid_gt_command(command):
+            # TODO: try to filter out gt upgrade messages from the output
+            # requires switching to run_command but need to figure out why i didn't
+            # do this originally, i believe it's because it either broke formatting 
+            # or broke some interactive features
             run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
         elif is_git_alias(command):
             run_uncaptured_command(f"git {gt_args}")
         else:
+            # TODO: see above TODO about filtering out gt upgrade messages
             run_uncaptured_command(f"{OG_GT_PATH} {gt_args}")
 
     # Show update notification at the end of successful command execution
