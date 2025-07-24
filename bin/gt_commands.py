@@ -165,7 +165,7 @@ def delete_branch(branch: str, dry_run: bool):
     print(f"🗑️  Deleted branch: {COLORS['RED']}{branch}{COLORS['RESET']}")
 
 
-def sync_command(dry_run: bool, skip_restack: bool = False):
+def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool = False):
     """Execute the sync command functionality."""
     # if there are any local changes, exit
     if run_command("git status --porcelain"):
@@ -176,6 +176,23 @@ def sync_command(dry_run: bool, skip_restack: bool = False):
 
     # Store initial branch
     initial_branch = get_current_branch()
+    
+    # If current_stack mode, parse the stack before switching to main
+    stack_branches: set[str] = set()
+    stack_list: list[str] = []
+    if current_stack:
+        if initial_branch == "main":
+            print(f"{COLORS['RED']}⚠️  Cannot sync current stack from main branch. Please switch to a stack branch.{COLORS['RESET']}")
+            exit(1)
+        
+        print(f"\n{COLORS['BLUE']}📋 Parsing current stack from branch: {initial_branch}...{COLORS['RESET']}")
+        try:
+            stack_list = parse_stack()
+            stack_branches = set(stack_list)
+            print(f"Found stack with {len(stack_branches)} branches: {', '.join(stack_list)}")
+        except Exception as e:
+            print(f"{COLORS['RED']}⚠️  Error parsing stack: {e}{COLORS['RESET']}")
+            exit(1)
 
     # Step 1: Checkout and pull main
     print(
@@ -185,8 +202,12 @@ def sync_command(dry_run: bool, skip_restack: bool = False):
     run_command("git pull")
 
     # Step 2: Get local branches
-    print(f"\n{COLORS['BLUE']}📋 Fetching local branches...{COLORS['RESET']}")
-    local_branches = get_local_branches()
+    if current_stack:
+        print(f"\n{COLORS['BLUE']}📋 Using branches from current stack...{COLORS['RESET']}")
+        local_branches = stack_branches
+    else:
+        print(f"\n{COLORS['BLUE']}📋 Fetching local branches...{COLORS['RESET']}")
+        local_branches = get_local_branches()
 
     # Step 3: Get closed PR branches
     print(
@@ -198,15 +219,18 @@ def sync_command(dry_run: bool, skip_restack: bool = False):
     merged_branches = local_branches.intersection(closed_pr_branches)
     unmerged_branches = local_branches - closed_pr_branches
     if unmerged_branches:
-        print(f"\n{COLORS['YELLOW']}Unmerged branches:{COLORS['RESET']}")
+        scope_text = "stack" if current_stack else "local"
+        print(f"\n{COLORS['YELLOW']}Unmerged {scope_text} branches:{COLORS['RESET']}")
         for branch in unmerged_branches:
             print(f"🔀  {branch}")
 
     if not merged_branches:
-        print(f"\n{COLORS['GREEN']}✨ No merged branches to clean up!{COLORS['RESET']}")
+        scope_text = "stack" if current_stack else ""
+        print(f"\n{COLORS['GREEN']}✨ No merged {scope_text} branches to clean up!{COLORS['RESET']}")
     else:
         # Step 5: Prompt for deletion
-        print(f"\n{COLORS['YELLOW']}Found merged branches:{COLORS['RESET']}")
+        scope_text = "stack" if current_stack else ""
+        print(f"\n{COLORS['YELLOW']}Found merged {scope_text} branches:{COLORS['RESET']}")
         for branch in merged_branches:
             delete = (
                 input(
@@ -218,14 +242,35 @@ def sync_command(dry_run: bool, skip_restack: bool = False):
             if delete == "y" or delete == "":
                 delete_branch(branch, dry_run)
 
-    # Step 6: Run gt restack (unless skipped)
+    # Step 6: Run gt restack (unless skipped or in current_stack mode)
     if not skip_restack:
-        print(f"\n{COLORS['BLUE']}🔄 Running 'gt restack'...{COLORS['RESET']}")
-        run_update_command(
-            f"{OG_GT_PATH} restack",
-            dry_run,
-            show_output_in_terminal=True,
-        )
+        if current_stack:
+            # Find the top branch of the current stack that still exists
+            top_branch = None
+            for branch in reversed(stack_list):  # Start from top of stack
+                if branch not in merged_branches:
+                    top_branch = branch
+                    break
+            
+            if top_branch:
+                print(f"\n{COLORS['BLUE']}🔄 Running targeted restack from top of current stack: {top_branch}...{COLORS['RESET']}")
+                run_command(f"git checkout {top_branch}")
+                run_update_command(
+                    f"{OG_GT_PATH} restack",
+                    dry_run,
+                    show_output_in_terminal=True,
+                )
+            else:
+                print(
+                    f"\n{COLORS['YELLOW']}⏩ No branches left in current stack to restack.{COLORS['RESET']}"
+                )
+        else:
+            print(f"\n{COLORS['BLUE']}🔄 Running 'gt restack'...{COLORS['RESET']}")
+            run_update_command(
+                f"{OG_GT_PATH} restack",
+                dry_run,
+                show_output_in_terminal=True,
+            )
     else:
         print(
             f"\n{COLORS['YELLOW']}⏩ Skipping 'gt restack' as requested.{COLORS['RESET']}"
@@ -1108,6 +1153,11 @@ def create_sync_parser() -> argparse.ArgumentParser:
         action="store_true", 
         help="Skip running 'gt restack' at the end"
     )
+    parser.add_argument(
+        "-cs", "--current-stack",
+        action="store_true",
+        help="Sync only the current stack branches"
+    )
     return parser
 
 
@@ -1160,6 +1210,7 @@ def main():
         print("  sync options:")
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
         print("    --skip-restack, -sr Skip running 'gt restack' at the end")
+        print("    --current-stack, -cs Sync only the current stack branches")
         print("  submit options:")
         print("    --single, -si       Submit only the current branch")
         print(
