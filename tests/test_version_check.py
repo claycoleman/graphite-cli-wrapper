@@ -345,7 +345,7 @@ class TestVersionChecking(unittest.TestCase):
         main()
         
         mock_start_bg_check.assert_called_once()
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=False)
         mock_wait_and_notify.assert_called_once()
     
     @patch('gt_commands.wait_for_version_check_and_notify')

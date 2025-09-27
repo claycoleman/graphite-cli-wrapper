@@ -1,5 +1,61 @@
 #!/usr/bin/env python3
 """
+Focused tests for the pure stack parsing function.
+"""
+
+import unittest
+import sys
+import os
+
+# Add the bin directory to the path so we can import gt_commands
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
+
+from gt_commands import parse_stack_from_output
+
+
+class TestParseStackPure(unittest.TestCase):
+    def test_normal_output(self):
+        output = """◯ main
+◯ feature_a
+◯ feature_b
+◯ feature_c"""
+        self.assertEqual(
+            parse_stack_from_output(output), ["feature_a", "feature_b", "feature_c"]
+        )
+
+    def test_needs_restack_suffix_same_line(self):
+        output = """◯ main
+◯ feature_a (needs restack)
+◯ feature_b
+◯ feature_c (needs restack)"""
+        self.assertEqual(
+            parse_stack_from_output(output), ["feature_a", "feature_b", "feature_c"]
+        )
+
+    def test_needs_restack_wrapped_next_line(self):
+        output = """◯ main
+◯ user/feature-branch-1
+  (needs restack)
+◯ fix_critical_bug
+◯ feature/new-ui-component
+  (needs restack)"""
+        self.assertEqual(
+            parse_stack_from_output(output),
+            ["user/feature-branch-1", "fix_critical_bug", "feature/new-ui-component"],
+        )
+
+    def test_complex_names_and_dots(self):
+        output = """◯ main
+◯ fix.hot.issue
+◯ user/name_with_underscores
+◯ feature/kebab-case"""
+        self.assertEqual(
+            parse_stack_from_output(output),
+            ["fix.hot.issue", "user/name_with_underscores", "feature/kebab-case"],
+        )
+
+#!/usr/bin/env python3
+"""
 Test suite for stack comment functionality in gt_commands.py
 """
 

@@ -8,9 +8,10 @@ import threading
 import json
 import urllib.request
 import urllib.error
+import shlex
 import argparse
 from datetime import datetime, timedelta
-from typing import Literal, TypedDict, Any, cast
+from typing import Literal, TypedDict, Any, cast, Optional
 
 
 def run_uncaptured_command(command: str):
@@ -285,18 +286,30 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
 
 
 # Submit command functions
-def parse_stack() -> list[str]:
+def parse_stack_from_output(output: str) -> list[str]:
     """
-    Parse the stack from `gt ls --stack --reverse` and return an ordered list of branch names.
-    Returns in bottom to top order (ie, away from main). Removes main from the stack.
+    Pure parser: takes `gt ls --stack --reverse` output and returns an ordered list
+    of branch names in bottom-to-top order (excluding main). Behavior unchanged.
     """
-    output = run_command(f"{OG_GT_PATH} ls --stack --reverse")
     stack: list[str] = []
     for line in output.splitlines():
         if "◯" in line or "◉" in line:
-            # Extract branch name
-            branch = line.strip().split()[-1]
-            stack.append(branch)
+            # Extract branch name more robustly to handle "(needs restack)" messages
+            # Match pattern: optional whitespace, stack marker (◯ or ◉), optional whitespace, 
+            # capture branch name (word characters, dots, hyphens, underscores, forward slashes),
+            # ignore anything after whitespace (like "(needs restack)")
+            match = re.search(r'[◯◉]\s+([a-zA-Z0-9._\-/]+)', line)
+            if match:
+                branch = match.group(1)
+                stack.append(branch)
+            else:
+                # Fallback to original logic if regex doesn't match
+                words = line.strip().split()
+                # Filter out status messages like "(needs" and "restack)"
+                valid_words = [word for word in words if not (word.startswith('(') or word.endswith(')'))]
+                if valid_words:
+                    branch = valid_words[-1]
+                    stack.append(branch)
 
         # Detect branching
         if "│" in line or "─┐" in line:
@@ -308,6 +321,15 @@ def parse_stack() -> list[str]:
 
     # Skip main
     return stack[1:]
+
+
+def parse_stack() -> list[str]:
+    """
+    Parse the stack from `gt ls --stack --reverse` and return an ordered list of branch names.
+    Returns in bottom to top order (ie, away from main). Removes main from the stack.
+    """
+    output = run_command(f"{OG_GT_PATH} ls --stack --reverse")
+    return parse_stack_from_output(output)
 
 
 def get_current_branch() -> str:
@@ -327,7 +349,7 @@ class PRInfo(TypedDict):
     branches: dict[str, BranchInfo]
 
 
-def get_pr_info(single_branch: str | None = None) -> PRInfo:
+def get_pr_info(single_branch: Optional[str] = None) -> PRInfo:
     """
     Get PR URLs and base branches for all branches that have open PRs.
     Returns PR information including URLs and base branches
@@ -371,7 +393,7 @@ PR_NUMBER_PREFIX = "(#"
 PR_NUMBER_SUFFIX = ")"
 
 
-def get_stack_comment_from_pr(branch: str) -> tuple[str | None, str]:
+def get_stack_comment_from_pr(branch: str) -> tuple[Optional[str], str]:
     """
     Get the stack comment ID and body from a PR.
     Returns (comment_id, comment_body) or (None, "") if no stack comment found.
@@ -412,7 +434,7 @@ def _format_stack_line(
     return f"{tree_char}{indent} {pr_text}"
 
 
-def _parse_stack_line(line: str) -> tuple[str, str] | None:
+def _parse_stack_line(line: str) -> Optional[tuple[str, str]]:
     """
     Parse a stack comment line and extract the PR number and title.
     Returns (pr_number, title) or None if the line is not a valid stack entry.
@@ -619,8 +641,9 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
             )
         else:
             # Create new comment
+            escaped_comment = shlex.quote(stack_comment)
             run_update_command(
-                f'gh pr comment {branch} --body "{stack_comment}"',
+                f'gh pr comment {branch} --body {escaped_comment}',
                 dry_run=dry_run,
             )
 
@@ -668,8 +691,55 @@ def submit_branch(
         return branch_info["url"], "updated"
     else:
         print(f"Creating PR for branch: {branch}")
+        # Prefer repository PR template if present (top-level only); otherwise set empty body
+        repo_root = run_command("git rev-parse --show-toplevel")
+        # List directory entries and match with case-insensitive regex
+        candidate_dirs = [
+            repo_root,
+            os.path.join(repo_root, ".github"),
+            os.path.join(repo_root, "docs"),
+        ]
+        default_template_path = None
+        for directory in candidate_dirs:
+            if not os.path.isdir(directory):
+                continue
+            try:
+                for name in os.listdir(directory):
+                    if re.fullmatch(r"pull_request_template\.md", name, flags=re.IGNORECASE):
+                        default_template_path = os.path.join(directory, name)
+                        break
+                if default_template_path:
+                    break
+            except Exception:
+                pass
+
+        # Derive PR title from the earliest commit on this branch relative to parent
+        commit_subjects = run_command(
+            f"git log --reverse --pretty=%s {parent_branch}..{branch}"
+        ).splitlines()
+        if commit_subjects:
+            default_title = commit_subjects[0]
+            commit_count = len(commit_subjects)
+        else:
+            default_title = run_command("git log -1 --pretty=%s")
+            commit_count = 1
+
+        pr_title = default_title
+        if commit_count > 1:
+            user_input = input(
+                f"PR title for '{branch}'? Press Enter to use default [{default_title}]: "
+            ).strip()
+            if user_input:
+                pr_title = user_input
+
+        if default_template_path:
+            template_cmd = f"--body-file {shlex.quote(default_template_path)}"
+        else:
+            # No template available
+            template_cmd = "--body \"\""
+
         run_update_command(
-            f"gh pr create --draft --base {parent_branch} --head {branch} --fill",
+            f"gh pr create --draft --base {parent_branch} --head {branch} --title {shlex.quote(pr_title)} {template_cmd}",
             dry_run=dry_run,
         )
         # Get the new PR URL
@@ -795,11 +865,8 @@ def submit_command(
         # if we're not submitting the PRs below the current branch, we need to validate that they have PRs
         validate_stack_readiness(full_stack, current_index, pr_info)
 
-    print(
-        f"\nSubmitting {len(branches_to_submit)} {
-            'branch' if len(branches_to_submit) == 1 else 'branches'
-        } in {mode} mode..."
-    )
+    plural = "branch" if len(branches_to_submit) == 1 else "branches"
+    print(f"\nSubmitting {len(branches_to_submit)} {plural} in {mode} mode...")
 
     # Submit the branches
     for stack_index, branch in branches_to_submit:
@@ -941,7 +1008,7 @@ def should_check_version() -> bool:
         return True
 
 
-def get_latest_wrapper_version() -> str | None:
+def get_latest_wrapper_version() -> Optional[str]:
     """Fetch the latest version from npm registry."""
     try:
         # Use npm registry API to get latest version
@@ -1022,7 +1089,7 @@ def display_update_notification() -> None:
 
 
 # Global variable to track background version check
-_version_check_thread: threading.Thread | None = None
+_version_check_thread: Optional[threading.Thread] = None
 
 
 def start_background_version_check() -> None:
