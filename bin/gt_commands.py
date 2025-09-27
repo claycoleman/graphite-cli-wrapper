@@ -177,6 +177,12 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
 
     # Store initial branch
     initial_branch = get_current_branch()
+    # check if the initial branch is tracked by Graphite
+    if initial_branch not in get_local_branches():
+        print(
+            f"{COLORS['RED']}Error: Current branch '{initial_branch}' is not tracked by Graphite. Run 'gt track' and retry.{COLORS['RESET']}"
+        )
+        exit(1)
     
     # If current_stack mode, parse the stack before switching to main
     stack_branches: set[str] = set()
@@ -785,6 +791,14 @@ def submit_command(
     trunk_branch = run_command(f"{OG_GT_PATH} trunk")
     if current_branch == "main" or trunk_branch == current_branch:
         print("Error: Cannot run `gt submit` from the trunk branch.")
+        sys.exit(1)
+
+    # Warn if current branch is not tracked by Graphite
+    all_locals = get_local_branches()
+    if current_branch not in all_locals:
+        print(
+            f"{COLORS['RED']}Error: Current branch '{current_branch}' is not tracked by Graphite. Run 'gt track' and retry.{COLORS['RESET']}"
+        )
         sys.exit(1)
 
     print("Parsing the stack...")
