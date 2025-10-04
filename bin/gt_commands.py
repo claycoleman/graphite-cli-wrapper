@@ -1278,6 +1278,65 @@ def create_submit_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def create_diff_parser() -> argparse.ArgumentParser:
+    """Create argument parser for the df command."""
+    parser = argparse.ArgumentParser(
+        prog="gt df",
+        description="Show diff of current branch against Graphite parent",
+        add_help=True
+    )
+    parser.add_argument(
+        "-nw", "--no-working",
+        action="store_true",
+        help="Exclude working directory and index; show only committed diff"
+    )
+    parser.add_argument(
+        "-s", "--staged",
+        action="store_true",
+        help="Include staged changes but exclude unstaged (ignored with --no-working)"
+    )
+    parser.add_argument(
+        "-wo", "--working-only",
+        action="store_true",
+        help="Show only uncommitted changes (git diff HEAD)"
+    )
+    return parser
+
+
+def diff_command(no_working: bool, staged_only: bool, working_only: bool) -> None:
+    """Execute the df command functionality."""
+    # Handle working-only mode first (just uncommitted changes)
+    if working_only:
+        run_uncaptured_command("git diff HEAD")
+        return
+    
+    # Resolve Graphite trunk and parent
+    current_branch = get_current_branch()
+    trunk_branch = run_command(f"{OG_GT_PATH} trunk")
+
+    # If excluding working changes and we're at the bottom (parent is trunk), noop
+    if no_working and current_branch == trunk_branch:
+        return
+    
+    # Determine parent via Graphite
+    parent_branch = current_branch if current_branch == trunk_branch else run_command(f"{OG_GT_PATH} parent")
+
+    # Calculate merge-base between parent and HEAD
+    merge_base = run_command(f"git merge-base {parent_branch} HEAD")
+
+    # Build and run appropriate git diff
+    if no_working:
+        # committed-only diff unique to current branch
+        cmd = f"git diff {merge_base} HEAD"
+    elif staged_only:
+        # committed + staged (no unstaged)
+        cmd = f"git diff --staged {merge_base}"
+    else:
+        # Default: include committed + staged + unstaged
+        cmd = f"git diff {merge_base}"
+    run_uncaptured_command(cmd)
+
+
 def main():
     # Start background version check early
     start_background_version_check()
@@ -1286,7 +1345,7 @@ def main():
         print(
             "GT Wrapper - Enhanced Graphite CLI with paywall-less sync/submit commands"
         )
-        print("\nUsage: gt [sync|submit|<gt command>]")
+        print("\nUsage: gt [sync|submit|df|<gt command>]")
         print("\nCustom Commands:")
         print("  sync options:")
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
@@ -1302,6 +1361,10 @@ def main():
         )
         print("    --whole-stack, -w   Submit all branches in the stack")
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
+        print("  df (diff) options:")
+        print("    -nw, --no-working   Exclude working directory and index; show only committed diff")
+        print("    -s, --staged        Include staged changes but exclude unstaged")
+        print("    -wo, --working-only Show only uncommitted changes (git diff HEAD)")
 
         print("\nOriginal Graphite CLI Help:")
         print(get_gt_help())
@@ -1332,6 +1395,21 @@ def main():
             dry_run=args.dry_run,
             skip_restack=args.skip_restack, 
             current_stack=args.current_stack
+        )
+    elif command == "df":
+        parser = create_diff_parser()
+        try:
+            args = parser.parse_args(sys.argv[2:])
+        except SystemExit:
+            # argparse calls sys.exit on error, but we want to show update notification
+            wait_for_version_check_and_notify()
+            raise
+
+        # --staged has no effect with --no-working
+        diff_command(
+            no_working=args.no_working,
+            staged_only=(args.staged and not args.no_working),
+            working_only=args.working_only
         )
     elif command == "submit":
         parser = create_submit_parser()
