@@ -57,6 +57,9 @@ gt sync
 
 # Intelligent stack submission
 gt submit
+
+# Diff against Graphite parent
+gt df
 ```
 
 ### All Original Commands Work
@@ -71,6 +74,11 @@ gt move --onto main # moves a branch and its upstacked branches onto main, but c
 ## What's Enhanced
 - **sync**: Pulls main, identifies merged branches, prompts cleanup, restacks
 - **submit**: Analyzes stack, offers submission modes, manages PR stack references with threaded comments
+- **df**: Shows git diff against Graphite parent branch (vs `git diff` which compares to HEAD)
+  - Default: Shows all changes (committed + staged + unstaged) unique to current branch
+  - `-nw` / `--no-working`: Show only committed changes
+  - `-s` / `--staged`: Include staged changes but exclude unstaged
+  - `-wo` / `--working-only`: Show only uncommitted changes
 - **Everything else**: Identical to original Graphite CLI v1.4.3
 
 ## Uninstall
