@@ -137,9 +137,21 @@ def get_og_gt_path():
 OG_GT_PATH = get_og_gt_path()
 
 
+# Cached trunk branch to avoid repeated gt trunk calls
+_trunk_branch: Optional[str] = None
+
+
+def get_trunk_branch() -> str:
+    """Get the trunk branch, caching the result to avoid repeated calls."""
+    global _trunk_branch
+    if _trunk_branch is None:
+        _trunk_branch = run_command(f"{OG_GT_PATH} trunk")
+    return _trunk_branch
+
+
 # Sync command functions
 def get_local_branches() -> set[str]:
-    """Get all local branches from gt ls except 'main'."""
+    """Get all local branches from gt ls except trunk."""
     output = run_command(f"{OG_GT_PATH} ls --classic")
     branches: set[str] = set()
     for line in output.splitlines():
@@ -147,7 +159,7 @@ def get_local_branches() -> set[str]:
             branch = line.split("↱ $ ")[1].split()[0]
             branches.add(branch)
 
-    branches.discard("main")
+    branches.discard(get_trunk_branch())
     return branches
 
 
@@ -175,21 +187,24 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
         )
         exit(1)
 
+    # Get trunk branch (cached)
+    trunk_branch = get_trunk_branch()
+    
     # Store initial branch
     initial_branch = get_current_branch()
-    # check if the initial branch is tracked by Graphite
-    if initial_branch not in get_local_branches():
+    # check if the initial branch is tracked by Graphite (trunk is always allowed)
+    if initial_branch not in get_local_branches() and initial_branch != trunk_branch:
         print(
             f"{COLORS['RED']}Error: Current branch '{initial_branch}' is not tracked by Graphite. Run 'gt track' and retry.{COLORS['RESET']}"
         )
         exit(1)
     
-    # If current_stack mode, parse the stack before switching to main
+    # If current_stack mode, parse the stack before switching to trunk
     stack_branches: set[str] = set()
     stack_list: list[str] = []
     if current_stack:
-        if initial_branch == "main":
-            print(f"{COLORS['RED']}⚠️  Cannot sync current stack from main branch. Please switch to a stack branch.{COLORS['RESET']}")
+        if initial_branch == trunk_branch:
+            print(f"{COLORS['RED']}⚠️  Cannot sync current stack from trunk branch. Please switch to a stack branch.{COLORS['RESET']}")
             exit(1)
         
         print(f"\n{COLORS['BLUE']}📋 Parsing current stack from branch: {initial_branch}...{COLORS['RESET']}")
@@ -201,11 +216,11 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
             print(f"{COLORS['RED']}⚠️  Error parsing stack: {e}{COLORS['RESET']}")
             exit(1)
 
-    # Step 1: Checkout and pull main
+    # Step 1: Checkout and pull trunk
     print(
-        f"\n{COLORS['BLUE']}🔄 Switching to 'main' and pulling the latest changes...{COLORS['RESET']}"
+        f"\n{COLORS['BLUE']}🔄 Switching to '{trunk_branch}' and pulling the latest changes...{COLORS['RESET']}"
     )
-    run_command("git checkout main")
+    run_command(f"git checkout {trunk_branch}")
     run_command("git pull")
 
     # Step 2: Get local branches
@@ -295,7 +310,7 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
 def parse_stack_from_output(output: str) -> list[str]:
     """
     Pure parser: takes `gt ls --stack --reverse` output and returns an ordered list
-    of branch names in bottom-to-top order (excluding main). Behavior unchanged.
+    of branch names in bottom-to-top order (excluding trunk). Behavior unchanged.
     """
     stack: list[str] = []
     for line in output.splitlines():
@@ -322,17 +337,18 @@ def parse_stack_from_output(output: str) -> list[str]:
             print("Branching detected in the stack. Cannot run `gt submit`.")
             sys.exit(1)
 
-    assert stack[0] == "main", "Main branch not found in stack"
-    assert len(stack) > 1, "No stack found outside of main"
+    trunk_branch = get_trunk_branch()
+    assert stack[0] == trunk_branch, f"Trunk branch '{trunk_branch}' not found in stack"
+    assert len(stack) > 1, f"No stack found outside of {trunk_branch}"
 
-    # Skip main
+    # Skip trunk
     return stack[1:]
 
 
 def parse_stack() -> list[str]:
     """
     Parse the stack from `gt ls --stack --reverse` and return an ordered list of branch names.
-    Returns in bottom to top order (ie, away from main). Removes main from the stack.
+    Returns in bottom to top order (ie, away from trunk). Removes trunk from the stack.
     """
     output = run_command(f"{OG_GT_PATH} ls --stack --reverse")
     return parse_stack_from_output(output)
@@ -499,7 +515,7 @@ def parse_historical_branches_from_comment(
     }
 
     # First pass: find where the current lowest branch appears
-    for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
+    for i, line in enumerate(lines[2:], 2):  # Skip header and trunk
         parsed = _parse_stack_line(line)
         if not parsed:
             continue
@@ -519,7 +535,7 @@ def parse_historical_branches_from_comment(
         return [], {}
 
     # Second pass: collect branches that appear BEFORE the current lowest position
-    for i, line in enumerate(lines[2:], 2):  # Skip header and "main"
+    for i, line in enumerate(lines[2:], 2):  # Skip header and trunk
         if i >= current_lowest_position:  # Stop when we reach current branches
             break
 
@@ -535,7 +551,7 @@ def parse_historical_branches_from_comment(
         )
         historical_pr_info[f"historical_{pr_number}"] = {
             "url": pr_url,
-            "base": "main",  # We don't know the actual base, but this is reasonable
+            "base": "unknown",  # We don't know the actual base for historical branches
             "title": title,
         }
         historical_branches.append(f"historical_{pr_number}")
@@ -545,8 +561,9 @@ def parse_historical_branches_from_comment(
 
 def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str) -> str:
     """Format a comment showing the stack hierarchy with PR numbers and titles."""
-    # Start from main
-    lines = [STACK_COMMENT_PREFIX, "main"]
+    # Start from trunk
+    trunk_branch = get_trunk_branch()
+    lines = [STACK_COMMENT_PREFIX, trunk_branch]
 
     for i, branch in enumerate(stack):
         # Get PR number and title from URL if it exists
@@ -569,6 +586,9 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
 
 def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list[str]):
     """Add comments to submitted PRs and downstack PRs in the stack showing their relationships."""
+    # Get trunk branch
+    trunk_branch = get_trunk_branch()
+    
     # Refresh PR info to get all newly created PRs
     updated_pr_info = get_pr_info()
 
@@ -577,7 +597,7 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     lowest_branch_with_pr = None
 
     for branch in stack:
-        if branch != "main" and branch in updated_pr_info["branches"]:
+        if branch != trunk_branch and branch in updated_pr_info["branches"]:
             lowest_branch_with_pr = branch
             break
 
@@ -622,7 +642,7 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     branches_to_update = [
         b
         for b in branches_to_update
-        if b != "main" and b in updated_pr_info["branches"]
+        if b != trunk_branch and b in updated_pr_info["branches"]
     ]
 
     if not branches_to_update:
@@ -764,11 +784,12 @@ def validate_stack_readiness(
     Validate that all branches below the current branch in the stack have PRs.
     Raises an exception if any branch below doesn't have a PR.
     """
+    trunk_branch = get_trunk_branch()
     missing_prs: list[str] = []
 
-    # Check all branches from main up to (but not including) current branch
+    # Check all branches from trunk up to (but not including) current branch
     for branch in stack[:current_index]:
-        if branch != "main" and branch not in pr_info["branches"]:
+        if branch != trunk_branch and branch not in pr_info["branches"]:
             missing_prs.append(branch)
 
     if missing_prs:
@@ -786,10 +807,12 @@ def submit_command(
     dry_run: bool,
 ):
     """Execute the submit command functionality."""
+    # Get trunk branch (cached)
+    trunk_branch = get_trunk_branch()
+    
     # Step 1: Validate current branch
     current_branch = get_current_branch()
-    trunk_branch = run_command(f"{OG_GT_PATH} trunk")
-    if current_branch == "main" or trunk_branch == current_branch:
+    if current_branch == trunk_branch:
         print("Error: Cannot run `gt submit` from the trunk branch.")
         sys.exit(1)
 
@@ -884,14 +907,14 @@ def submit_command(
 
     # Submit the branches
     for stack_index, branch in branches_to_submit:
-        assert branch != "main" and branch != trunk_branch, (
+        assert branch != get_trunk_branch(), (
             f"{COLORS['RED']}Error: Cannot submit branch '{branch}' because it is the trunk branch.{COLORS['RESET']}"
         )
 
         # Checkout and submit the branch
         run_command(f"git checkout {branch}")
         parent_branch = (
-            full_stack[stack_index - 1] if stack_index > 0 else "main"
+            full_stack[stack_index - 1] if stack_index > 0 else get_trunk_branch()
         )  # The branch before this one in the stack
         url, status = submit_branch(branch, parent_branch, dry_run, pr_info)
         pr_urls.append((branch, url, status))
@@ -1312,7 +1335,7 @@ def diff_command(no_working: bool, staged_only: bool, working_only: bool) -> Non
     
     # Resolve Graphite trunk and parent
     current_branch = get_current_branch()
-    trunk_branch = run_command(f"{OG_GT_PATH} trunk")
+    trunk_branch = get_trunk_branch()
 
     # If excluding working changes and we're at the bottom (parent is trunk), noop
     if no_working and current_branch == trunk_branch:
