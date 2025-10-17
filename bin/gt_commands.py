@@ -685,91 +685,94 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     return results
 
 
-def submit_branch(
-    branch: str,
-    parent_branch: str,
-    dry_run: bool,
-    pr_info: PRInfo,
-) -> tuple[str, BranchSubmitStatus]:
-    """Submit a branch by pushing it to the remote repository."""
-    # Check if the branch exists remotely
-    remote_branches = run_command("git ls-remote --heads origin").splitlines()
-    remote_branch_names: set[str] = {
-        line.split("refs/heads/")[1]
-        for line in remote_branches
-        if "refs/heads/" in line
-    }
-
-    if branch in remote_branch_names:
-        # Force-push if branch already exists
-        run_update_command(
-            f"git push origin {branch} --force-with-lease",
-            dry_run=dry_run,
-        )
-    else:
-        # Normal push if branch is new
-        run_update_command(f"git push origin {branch}", dry_run=dry_run)
-
-    # Check if PR exists and has the correct base branch
-    if branch in pr_info["branches"]:
-        branch_info = pr_info["branches"][branch]
-        current_base = branch_info["base"]
-        if current_base != parent_branch:
+def push_branch(branch: str, remote_branch_names: set[str], dry_run: bool) -> tuple[str, bool, str]:
+    """
+    Push a single branch to remote. Returns (branch, success, error_msg).
+    Uses refspec so no checkout needed.
+    """
+    try:
+        if branch in remote_branch_names:
+            # Force-push if branch already exists
             run_update_command(
-                f"gh pr edit {branch} --base {parent_branch}",
+                f"git push origin {branch}:{branch} --force-with-lease",
                 dry_run=dry_run,
             )
-
-        return branch_info["url"], "updated"
-    else:
-        # Prefer repository PR template if present (top-level only); otherwise set empty body
-        repo_root = run_command("git rev-parse --show-toplevel")
-        # List directory entries and match with case-insensitive regex
-        candidate_dirs = [
-            repo_root,
-            os.path.join(repo_root, ".github"),
-            os.path.join(repo_root, "docs"),
-        ]
-        default_template_path = None
-        for directory in candidate_dirs:
-            if not os.path.isdir(directory):
-                continue
-            try:
-                for name in os.listdir(directory):
-                    if re.fullmatch(r"pull_request_template\.md", name, flags=re.IGNORECASE):
-                        default_template_path = os.path.join(directory, name)
-                        break
-                if default_template_path:
-                    break
-            except Exception:
-                pass
-
-        # Derive PR title from the earliest commit on this branch relative to parent
-        commit_subjects = run_command(
-            f"git log --reverse --pretty=%s {parent_branch}..{branch}"
-        ).splitlines()
-        if commit_subjects:
-            pr_title = commit_subjects[0]
         else:
-            pr_title = run_command("git log -1 --pretty=%s")
+            # Normal push if branch is new
+            run_update_command(f"git push origin {branch}:{branch}", dry_run=dry_run)
+        return (branch, True, "")
+    except Exception as e:
+        return (branch, False, str(e))
 
-        if default_template_path:
-            template_cmd = f"--body-file {shlex.quote(default_template_path)}"
-        else:
-            # No template available
-            template_cmd = "--body \"\""
 
-        run_update_command(
-            f"gh pr create --draft --base {parent_branch} --head {branch} --title {shlex.quote(pr_title)} {template_cmd}",
-            dry_run=dry_run,
-        )
-        # Get the new PR URL
-        pr_info = get_pr_info(branch)
+def create_or_update_pr(
+    branch: str,
+    parent_branch: str,
+    pr_info: PRInfo,
+    pr_template_path: Optional[str],
+    dry_run: bool,
+) -> tuple[str, BranchSubmitStatus, str]:
+    """
+    Create or update PR for a branch. Returns (url, status, error_msg).
+    """
+    try:
+        # Check if PR exists and has the correct base branch
         if branch in pr_info["branches"]:
-            return pr_info["branches"][branch]["url"], "created"
+            branch_info = pr_info["branches"][branch]
+            current_base = branch_info["base"]
+            if current_base != parent_branch:
+                run_update_command(
+                    f"gh pr edit {branch} --base {parent_branch}",
+                    dry_run=dry_run,
+                )
+            return (branch_info["url"], "updated", "")
         else:
-            print(f"Error: PR creation failed for branch: {branch}")
-            sys.exit(1)
+            # Derive PR title from the earliest commit on this branch relative to parent
+            commit_subjects = run_command(
+                f"git log --reverse --pretty=%s {parent_branch}..{branch}"
+            ).splitlines()
+            if commit_subjects:
+                pr_title = commit_subjects[0]
+            else:
+                pr_title = run_command("git log -1 --pretty=%s")
+
+            if pr_template_path:
+                template_cmd = f"--body-file {shlex.quote(pr_template_path)}"
+            else:
+                template_cmd = "--body \"\""
+
+            run_update_command(
+                f"gh pr create --draft --base {parent_branch} --head {branch} --title {shlex.quote(pr_title)} {template_cmd}",
+                dry_run=dry_run,
+            )
+            # Get the new PR URL
+            new_pr_info = get_pr_info(branch)
+            if branch in new_pr_info["branches"]:
+                return (new_pr_info["branches"][branch]["url"], "created", "")
+            else:
+                return ("", "to-create", f"PR creation failed for branch: {branch}")
+    except Exception as e:
+        return ("", "to-create", str(e))
+
+
+def get_pr_template_path() -> Optional[str]:
+    """Find PR template file if it exists."""
+    repo_root = run_command("git rev-parse --show-toplevel")
+    candidate_dirs = [
+        repo_root,
+        os.path.join(repo_root, ".github"),
+        os.path.join(repo_root, "docs"),
+    ]
+    for directory in candidate_dirs:
+        if not os.path.isdir(directory):
+            continue
+        try:
+            for name in os.listdir(directory):
+                if re.fullmatch(r"pull_request_template\.md", name, flags=re.IGNORECASE):
+                    return os.path.join(directory, name)
+        except Exception:
+            pass
+    return None
 
 
 def validate_stack_readiness(
@@ -900,19 +903,60 @@ def submit_command(
     plural = "branch" if len(branches_to_submit) == 1 else "branches"
     print(f"\nSubmitting {len(branches_to_submit)} {plural} in {mode} mode...")
 
-    # Submit the branches
-    for stack_index, branch in branches_to_submit:
-        assert branch != get_trunk_branch(), (
-            f"{COLORS['RED']}Error: Cannot submit branch '{branch}' because it is the trunk branch.{COLORS['RESET']}"
-        )
+    # Get remote branches once (gtw-15 optimization)
+    print(f"{COLORS['BLUE']}Fetching remote branches...{COLORS['RESET']}")
+    remote_branches = run_command("git ls-remote --heads origin").splitlines()
+    remote_branch_names: set[str] = {
+        line.split("refs/heads/")[1]
+        for line in remote_branches
+        if "refs/heads/" in line
+    }
 
-        # Checkout and submit the branch
-        run_command(f"git checkout {branch}")
-        parent_branch = (
-            full_stack[stack_index - 1] if stack_index > 0 else get_trunk_branch()
-        )  # The branch before this one in the stack
-        url, status = submit_branch(branch, parent_branch, dry_run, pr_info)
-        pr_urls.append((branch, url, status))
+    # Get PR template path once
+    pr_template_path = get_pr_template_path()
+
+    # PHASE 1: Push all branches in parallel
+    print(f"{COLORS['BLUE']}Pushing {len(branches_to_submit)} {plural}...{COLORS['RESET']}")
+    push_results = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_branch = {
+            executor.submit(push_branch, branch, remote_branch_names, dry_run): branch
+            for stack_index, branch in branches_to_submit
+        }
+        for future in as_completed(future_to_branch):
+            push_results.append(future.result())
+    
+    # Check for push failures
+    push_failures = [(branch, error) for branch, success, error in push_results if not success]
+    if push_failures:
+        print(f"\n{COLORS['RED']}❌ Failed to push branches:{COLORS['RESET']}")
+        for branch, error in push_failures:
+            print(f"  {branch}: {error}")
+        sys.exit(1)
+    
+    print(f"{COLORS['GREEN']}✓ Pushed {len(push_results)} {plural}{COLORS['RESET']}")
+
+    # PHASE 2: Create/update all PRs in parallel
+    print(f"{COLORS['BLUE']}Creating/updating PRs...{COLORS['RESET']}")
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_branch = {}
+        for stack_index, branch in branches_to_submit:
+            assert branch != get_trunk_branch(), (
+                f"{COLORS['RED']}Error: Cannot submit branch '{branch}' because it is the trunk branch.{COLORS['RESET']}"
+            )
+            parent_branch = (
+                full_stack[stack_index - 1] if stack_index > 0 else get_trunk_branch()
+            )
+            future = executor.submit(create_or_update_pr, branch, parent_branch, pr_info, pr_template_path, dry_run)
+            future_to_branch[future] = branch
+        
+        for future in as_completed(future_to_branch):
+            branch = future_to_branch[future]
+            url, status, error = future.result()
+            if error:
+                print(f"{COLORS['YELLOW']}⚠️  {branch}: {error}{COLORS['RESET']}")
+                # Continue anyway, user will see in results
+            pr_urls.append((branch, url, status))
 
     # Return to initial branch
     run_command(f"git checkout {current_branch}")
