@@ -606,9 +606,6 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     extended_pr_info = updated_pr_info
 
     if lowest_branch_with_pr:
-        print(
-            f"Using {lowest_branch_with_pr} as source of truth for historical context"
-        )
         _, source_of_truth_comment = get_stack_comment_from_pr(lowest_branch_with_pr)
 
         if source_of_truth_comment:
@@ -646,12 +643,9 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     ]
 
     if not branches_to_update:
-        print("No branches with PRs to update")
         return
 
     for branch in branches_to_update:
-        print(f"Updating stack comment for PR: {branch}")
-
         # Get comment ID for this branch
         comment_id, _ = get_stack_comment_from_pr(branch)
 
@@ -695,20 +689,15 @@ def submit_branch(
             f"git push origin {branch} --force-with-lease",
             dry_run=dry_run,
         )
-        print(f"Force-pushed branch: {branch}")
     else:
         # Normal push if branch is new
         run_update_command(f"git push origin {branch}", dry_run=dry_run)
-        print(f"Pushed branch: {branch}")
 
     # Check if PR exists and has the correct base branch
     if branch in pr_info["branches"]:
         branch_info = pr_info["branches"][branch]
         current_base = branch_info["base"]
         if current_base != parent_branch:
-            print(
-                f"Updating PR base branch from '{current_base}' to '{parent_branch}'..."
-            )
             run_update_command(
                 f"gh pr edit {branch} --base {parent_branch}",
                 dry_run=dry_run,
@@ -716,7 +705,6 @@ def submit_branch(
 
         return branch_info["url"], "updated"
     else:
-        print(f"Creating PR for branch: {branch}")
         # Prefer repository PR template if present (top-level only); otherwise set empty body
         repo_root = run_command("git rev-parse --show-toplevel")
         # List directory entries and match with case-insensitive regex
@@ -909,16 +897,10 @@ def submit_command(
         url, status = submit_branch(branch, parent_branch, dry_run, pr_info)
         pr_urls.append((branch, url, status))
 
-    # Update stack references for submitted and downstack PRs
-    print("\nUpdating stack references...")
-    submitted_branch_names = [branch for _, branch in branches_to_submit]
-    add_stack_comments(full_stack, dry_run, submitted_branch_names)
-
     # Return to initial branch
     run_command(f"git checkout {current_branch}")
-    print(f"\n{COLORS['BLUE']}↩️  Returned to branch: {current_branch}{COLORS['RESET']}")
 
-    # Print all PR URLs at the end
+    # Print all PR URLs immediately
     print("\nPull Requests:")
     for branch, url, status in pr_urls:
         if status == "updated":
@@ -931,6 +913,18 @@ def submit_command(
             print(f"⚠️  Unknown status: {status}")
 
     print("\nAll branches submitted successfully.")
+
+    # Update stack references for submitted and downstack PRs in background
+    print(f"{COLORS['BLUE']}Updating stack comments...{COLORS['RESET']}", end="", flush=True)
+    submitted_branch_names = [branch for _, branch in branches_to_submit]
+    
+    def update_comments_background():
+        add_stack_comments(full_stack, dry_run, submitted_branch_names)
+        print(f" {COLORS['GREEN']}✓{COLORS['RESET']}")
+    
+    comment_thread = threading.Thread(target=update_comments_background, daemon=False)
+    comment_thread.start()
+    comment_thread.join()  # Wait for completion but user already sees results
 
 
 def is_git_alias(command: str) -> bool:
