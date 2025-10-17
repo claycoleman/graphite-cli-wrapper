@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 import shlex
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Literal, TypedDict, Any, cast, Optional
 
@@ -584,8 +585,11 @@ def format_stack_comment(stack: list[str], pr_info: PRInfo, current_branch: str)
     return "\n".join(lines)
 
 
-def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list[str]):
-    """Add comments to submitted PRs and downstack PRs in the stack showing their relationships."""
+def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list[str]) -> list[tuple[str, bool, str]]:
+    """
+    Add comments to submitted PRs and downstack PRs in the stack showing their relationships.
+    Returns list of (branch, success, error_msg) tuples for each comment update.
+    """
     # Get trunk branch
     trunk_branch = get_trunk_branch()
     
@@ -643,29 +647,42 @@ def add_stack_comments(stack: list[str], dry_run: bool, submitted_branches: list
     ]
 
     if not branches_to_update:
-        return
+        return []
 
-    for branch in branches_to_update:
-        # Get comment ID for this branch
-        comment_id, _ = get_stack_comment_from_pr(branch)
+    def update_single_comment(branch: str) -> tuple[str, bool, str]:
+        """Update comment for a single branch. Returns (branch, success, error_msg)."""
+        try:
+            # Get comment ID for this branch
+            comment_id, _ = get_stack_comment_from_pr(branch)
 
-        # Generate stack comment using the extended stack (same for all branches)
-        # Current branch is in the original stack
-        stack_comment = format_stack_comment(extended_stack, extended_pr_info, branch)
+            # Generate stack comment using the extended stack (same for all branches)
+            stack_comment = format_stack_comment(extended_stack, extended_pr_info, branch)
 
-        if comment_id:
-            # Update existing comment using GraphQL API
-            run_update_command(
-                f'gh api graphql -f id="{comment_id}" -f body="{stack_comment}" -f query=\'mutation($id: ID!, $body: String!) {{ updateIssueComment(input: {{ id: $id, body: $body }}) {{ issueComment {{ bodyText }} }} }}\'',
-                dry_run=dry_run,
-            )
-        else:
-            # Create new comment
-            escaped_comment = shlex.quote(stack_comment)
-            run_update_command(
-                f'gh pr comment {branch} --body {escaped_comment}',
-                dry_run=dry_run,
-            )
+            if comment_id:
+                # Update existing comment using GraphQL API
+                run_update_command(
+                    f'gh api graphql -f id="{comment_id}" -f body="{stack_comment}" -f query=\'mutation($id: ID!, $body: String!) {{ updateIssueComment(input: {{ id: $id, body: $body }}) {{ issueComment {{ bodyText }} }} }}\'',
+                    dry_run=dry_run,
+                )
+            else:
+                # Create new comment
+                escaped_comment = shlex.quote(stack_comment)
+                run_update_command(
+                    f'gh pr comment {branch} --body {escaped_comment}',
+                    dry_run=dry_run,
+                )
+            return (branch, True, "")
+        except Exception as e:
+            return (branch, False, str(e))
+
+    # Run all comment updates in parallel
+    results = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_branch = {executor.submit(update_single_comment, branch): branch for branch in branches_to_update}
+        for future in as_completed(future_to_branch):
+            results.append(future.result())
+    
+    return results
 
 
 def submit_branch(
@@ -912,19 +929,25 @@ def submit_command(
         else:
             print(f"⚠️  Unknown status: {status}")
 
-    print("\nAll branches submitted successfully.")
-
-    # Update stack references for submitted and downstack PRs in background
-    print(f"{COLORS['BLUE']}Updating stack comments...{COLORS['RESET']}", end="", flush=True)
+    # Update stack references for submitted and downstack PRs (in parallel)
+    print(f"\n{COLORS['BLUE']}Updating stack comments...{COLORS['RESET']}")
     submitted_branch_names = [branch for _, branch in branches_to_submit]
+    comment_results = add_stack_comments(full_stack, dry_run, submitted_branch_names)
     
-    def update_comments_background():
-        add_stack_comments(full_stack, dry_run, submitted_branch_names)
-        print(f" {COLORS['GREEN']}✓{COLORS['RESET']}")
-    
-    comment_thread = threading.Thread(target=update_comments_background, daemon=False)
-    comment_thread.start()
-    comment_thread.join()  # Wait for completion but user already sees results
+    # Show results
+    if comment_results:
+        success_count = sum(1 for _, success, _ in comment_results if success)
+        fail_count = len(comment_results) - success_count
+        
+        if fail_count > 0:
+            print(f"{COLORS['YELLOW']}⚠️  {success_count} succeeded, {fail_count} failed{COLORS['RESET']}")
+            for branch, success, error in comment_results:
+                if not success:
+                    print(f"  ❌ {branch}: {error}")
+        else:
+            print(f"{COLORS['GREEN']}✓ Updated {success_count} stack comments{COLORS['RESET']}")
+
+    print("\nAll branches submitted successfully.")
 
 
 def is_git_alias(command: str) -> bool:
