@@ -174,7 +174,7 @@ def get_closed_pr_branches() -> set[str]:
 
 def delete_branch(branch: str, dry_run: bool):
     """Delete a local branch using gt delete to maintain stack relationships."""
-    run_update_command(f"{OG_GT_PATH} delete {branch}", dry_run)
+    run_update_command(f"{OG_GT_PATH} delete {branch} --force", dry_run)
     print(f"🗑️  Deleted branch: {COLORS['RED']}{branch}{COLORS['RESET']}")
 
 
