@@ -744,19 +744,9 @@ def submit_branch(
             f"git log --reverse --pretty=%s {parent_branch}..{branch}"
         ).splitlines()
         if commit_subjects:
-            default_title = commit_subjects[0]
-            commit_count = len(commit_subjects)
+            pr_title = commit_subjects[0]
         else:
-            default_title = run_command("git log -1 --pretty=%s")
-            commit_count = 1
-
-        pr_title = default_title
-        if commit_count > 1:
-            user_input = input(
-                f"PR title for '{branch}'? Press Enter to use default [{default_title}]: "
-            ).strip()
-            if user_input:
-                pr_title = user_input
+            pr_title = run_command("git log -1 --pretty=%s")
 
         if default_template_path:
             template_cmd = f"--body-file {shlex.quote(default_template_path)}"
