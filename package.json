@@ -1,6 +1,6 @@
 {
   "name": "@claycoleman/gt-wrapper",
-  "version": "1.0.13",
+  "version": "1.1.0",
   "description": "Enhanced Graphite CLI with custom sync/submit commands - drop-in replacement for gt/graphite",
   "bin": {
     "gt": "./bin/gt_commands.py",
