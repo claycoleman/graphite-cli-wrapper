@@ -165,12 +165,16 @@ def get_local_branches() -> set[str]:
 
 
 def get_closed_pr_branches() -> set[str]:
-    """Get head branches of all closed PRs."""
+    """Get head branches of all closed PRs, sorted by most recently updated."""
+    # Use search query to sort by updated date (most recent first)
     prs = run_command(
-        "gh pr list --limit 125 --state merged --json headRefName,updatedAt "
-        "--jq 'sort_by(.updatedAt) | reverse | map(select(.headRefName | test(\"^renovate/\") | not)) | .[].headRefName'"
+        "gh pr list --search 'is:merged sort:updated-desc' --limit 125 --json headRefName "
+        "--jq 'map(select(.headRefName | test(\"^renovate/\") | not)) | .[].headRefName'"
     )
-    return set(prs.split("\n"))
+    # Filter out empty strings
+    result = set((prs or "").split("\n"))
+    result.discard("")
+    return result
 
 
 def delete_branch(branch: str, dry_run: bool):
