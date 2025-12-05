@@ -183,7 +183,12 @@ def delete_branch(branch: str, dry_run: bool):
     print(f"🗑️  Deleted branch: {COLORS['RED']}{branch}{COLORS['RESET']}")
 
 
-def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool = False):
+def sync_command(
+    dry_run: bool,
+    skip_restack: bool = False,
+    current_stack: bool = False,
+    assume_yes: bool = False,
+):
     """Execute the sync command functionality."""
     # if there are any local changes, exit
     if run_command("git status --porcelain"):
@@ -257,8 +262,15 @@ def sync_command(dry_run: bool, skip_restack: bool = False, current_stack: bool 
     else:
         # Step 5: Prompt for deletion
         scope_text = "stack" if current_stack else ""
-        print(f"\n{COLORS['YELLOW']}Found merged {scope_text} branches:{COLORS['RESET']}")
+        auto_delete_note = " (auto-confirmed)" if assume_yes else ""
+        print(
+            f"\n{COLORS['YELLOW']}Found merged {scope_text} branches{auto_delete_note}:{COLORS['RESET']}"
+        )
         for branch in merged_branches:
+            if assume_yes:
+                delete_branch(branch, dry_run)
+                continue
+
             delete = (
                 input(
                     f"🔀  Branch '{COLORS['BOLD']}{branch}{COLORS['RESET']}' is merged into main. Delete it? [Y]/n: "
@@ -1317,6 +1329,11 @@ def create_sync_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Sync only the current stack branches"
     )
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Automatically delete merged branches without prompting"
+    )
     return parser
 
 
@@ -1429,6 +1446,7 @@ def main():
         print("    --dry-run, -d       Run in dry-run mode (no changes made)")
         print("    --skip-restack, -sr Skip running 'gt restack' at the end")
         print("    --current-stack, -cs Sync only the current stack branches")
+        print("    --yes, -y           Delete merged branches without prompts")
         print("  submit options:")
         print("    --single, -si       Submit only the current branch")
         print(
@@ -1472,7 +1490,8 @@ def main():
         sync_command(
             dry_run=args.dry_run,
             skip_restack=args.skip_restack, 
-            current_stack=args.current_stack
+            current_stack=args.current_stack,
+            assume_yes=args.yes,
         )
     elif command == "df":
         parser = create_diff_parser()
