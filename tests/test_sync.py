@@ -311,6 +311,33 @@ class TestSyncCommand(unittest.TestCase):
         stack_context_found = any("stack" in call.lower() for call in print_calls)
         self.assertTrue(stack_context_found)
 
+    @patch('gt_commands.get_trunk_branch', return_value="main")
+    @patch('gt_commands.delete_branch')
+    @patch('gt_commands.run_command')
+    @patch('gt_commands.run_update_command')
+    @patch('gt_commands.get_current_branch')
+    @patch('gt_commands.get_local_branches')
+    @patch('gt_commands.get_closed_pr_branches')
+    @patch('builtins.input')
+    def test_sync_command_yes_auto_deletes(self, mock_input, mock_get_closed_prs, mock_get_local_branches,
+                                           mock_get_current_branch, mock_run_update_command, mock_run_command,
+                                           mock_delete_branch, mock_get_trunk_branch):
+        """Test sync auto-deletes merged branches when --yes flag is used"""
+        mock_run_command.side_effect = [
+            "",  # git status --porcelain (no local changes)
+            "",  # git checkout main
+            "",  # git pull
+            "",  # git checkout original_branch
+        ]
+        mock_get_current_branch.return_value = "feature_b"
+        mock_get_local_branches.return_value = {"feature_a", "feature_b"}
+        mock_get_closed_prs.return_value = {"feature_a"}  # feature_a is merged
+
+        sync_command(dry_run=False, skip_restack=False, current_stack=False, assume_yes=True)
+
+        mock_input.assert_not_called()
+        mock_delete_branch.assert_called_once_with("feature_a", False)
+
     @patch('gt_commands.run_command')
     def test_sync_command_local_changes_error(self, mock_run_command):
         """Test that sync exits when there are local changes"""
@@ -378,7 +405,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=False)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=False, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -390,7 +417,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=False, current_stack=False)
+        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=False, current_stack=False, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -402,7 +429,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=False, current_stack=False)
+        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=False, current_stack=False, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -414,7 +441,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=True, current_stack=False)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=True, current_stack=False, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -426,7 +453,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=True, current_stack=False)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=True, current_stack=False, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -438,7 +465,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=True)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=True, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -450,7 +477,31 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=True)
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=True, assume_yes=False)
+
+    @patch('gt_commands.wait_for_version_check_and_notify')
+    @patch('gt_commands.start_background_version_check')
+    @patch('gt_commands.sync_command')
+    @patch('sys.argv', ['gt_commands.py', 'sync', '--yes'])
+    def test_main_sync_yes_flag(self, mock_sync_command, mock_start_bg_check, mock_wait_and_notify):
+        """Test main function handles sync command with --yes flag"""
+        from gt_commands import main
+        
+        main()
+        
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=False, assume_yes=True)
+
+    @patch('gt_commands.wait_for_version_check_and_notify')
+    @patch('gt_commands.start_background_version_check')
+    @patch('gt_commands.sync_command')
+    @patch('sys.argv', ['gt_commands.py', 'sync', '-y'])
+    def test_main_sync_yes_short_flag(self, mock_sync_command, mock_start_bg_check, mock_wait_and_notify):
+        """Test main function handles sync command with -y flag"""
+        from gt_commands import main
+        
+        main()
+        
+        mock_sync_command.assert_called_once_with(dry_run=False, skip_restack=False, current_stack=False, assume_yes=True)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -462,7 +513,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=True, current_stack=True)
+        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=True, current_stack=True, assume_yes=False)
 
     @patch('gt_commands.wait_for_version_check_and_notify')
     @patch('gt_commands.start_background_version_check')
@@ -474,7 +525,7 @@ class TestSyncCommandLineIntegration(unittest.TestCase):
         
         main()
         
-        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=True, current_stack=True)
+        mock_sync_command.assert_called_once_with(dry_run=True, skip_restack=True, current_stack=True, assume_yes=False)
 
 
 class TestSyncHelperFunctions(unittest.TestCase):

@@ -44,7 +44,7 @@ The power of stacked diffs comes from building incremental changes that depend o
    ```
    As team members merge your PRs, run `gt sync` to:
    - Check out main and pull latest changes
-   - Prompt you to delete outdated/merged branches
+   - Prompt you to delete outdated/merged branches (or auto-delete with `gt sync -y`)
    - Automatically restack any remaining branches on top of the updated main
 
 This workflow keeps your development organized, makes reviews more focused, and maintains a clean git history.
@@ -54,6 +54,8 @@ This workflow keeps your development organized, makes reviews more focused, and 
 ```bash
 # Smart sync with branch cleanup
 gt sync
+# Auto-confirm branch deletions (handy for scripts)
+gt sync -y
 
 # Intelligent stack submission
 gt submit
@@ -72,7 +74,7 @@ gt move --onto main # moves a branch and its upstacked branches onto main, but c
 ```
 
 ## What's Enhanced
-- **sync**: Pulls main, identifies merged branches, prompts cleanup, restacks
+- **sync**: Pulls main, identifies merged branches, prompts cleanup (or auto-deletes with `-y`/`--yes`), restacks
 - **submit**: Analyzes stack, offers submission modes, manages PR stack references with threaded comments
 - **df**: Shows git diff against Graphite parent branch (vs `git diff` which compares to HEAD)
   - Default: Shows all changes (committed + staged + unstaged) unique to current branch
